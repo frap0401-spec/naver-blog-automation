@@ -16,8 +16,9 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import config, llm, manual, media, smartcut, subtitles, tts
+from . import config, graphics, llm, manual, media, sfx, smartcut, subtitles, talk, tts
 
+TALK_STAGES = ["소리 살펴보기", "말 받아쓰기", "구간 이어 붙이기", "자막·문구 만들기", "미리보기 준비"]
 STAGES = ["목소리 만들기", "영상 살펴보기", "장면 고르기 (Claude)", "장면 이어 붙이기", "자막·문구 만들기", "미리보기 준비"]
 
 
@@ -27,6 +28,7 @@ class Job:
     created: float = field(default_factory=time.time)
     title: str = ""
     link: str = ""
+    mode: str = "auto"      # auto | detail | talk
     sources: list = field(default_factory=list)   # [{"name", "path", "kind": "video"|"photo"}]
     durations: list = field(default_factory=list)
     status: str = "draft"   # draft | done | error
@@ -47,6 +49,13 @@ class Job:
     style: str = "insta"
     bgm: str = ""
     smart_cut: bool = True
+    graphic_theme: str = "basic"
+    graphic_pos: str = "bottom"
+    graphic_amount: str = "none"
+    sfx_scene: str = ""
+    sfx_graphic: str = ""
+    beauty: str = "none"
+    talk: dict = field(default_factory=dict)
     cleanup: dict = field(default_factory=dict)
     fixes: list = field(default_factory=list)
     duration: float = 0.0
@@ -112,7 +121,7 @@ def list_jobs() -> list[dict]:
         if not job:
             continue
         out.append({
-            "id": job.id, "title": job.title or "제목 없음", "status": job.status, "task": job.task,
+            "id": job.id, "title": job.title or "제목 없음", "status": job.status, "task": job.task, "mode": job.mode,
             "created": job.created, "duration": job.duration, "sources": len(job.sources),
             "has_cover": (job.dir / "out" / "cover.jpg").exists(),
         })
@@ -127,8 +136,9 @@ def delete(job: Job) -> None:
 
 # ---------------------------------------------------------------- 파일
 
-def create(title: str = "", link: str = "") -> Job:
-    job = Job(id=uuid.uuid4().hex[:12], title=title.strip(), link=link.strip())
+def create(title: str = "", link: str = "", mode: str = "auto") -> Job:
+    job = Job(id=uuid.uuid4().hex[:12], title=title.strip(), link=link.strip(),
+              mode=mode if mode in ("auto", "detail", "talk") else "auto")
     job.save()
     with _lock:
         _jobs[job.id] = job
@@ -143,6 +153,13 @@ def add_files(job: Job, files: list[tuple[str, bytes]]) -> None:
         stem = uuid.uuid4().hex[:8]
         raw = src_dir / f"{stem}{ext}"
         raw.write_bytes(data)
+        if ext in media.IMAGE_EXT and job.mode == "detail":
+            for k, piece in enumerate(split_detail(raw, src_dir / stem)):
+                vid = piece.with_suffix(".mp4")
+                media.photo_to_video(piece, vid, 3.5)
+                job.sources.append({"name": f"{name} #{k + 1}", "path": str(vid.relative_to(job.dir)), "kind": "photo"})
+                job.durations.append(round(media.probe(vid).duration, 2))
+            continue
         if ext in media.IMAGE_EXT:
             vid = src_dir / f"{stem}.mp4"
             media.photo_to_video(raw, vid)
@@ -158,6 +175,34 @@ def add_files(job: Job, files: list[tuple[str, bytes]]) -> None:
         job.durations.append(round(info.duration, 2))
     _invalidate_frames(job)
     job.save()
+
+
+def split_detail(img_path: Path, out_stem: Path) -> list[Path]:
+    """긴 상세페이지 이미지를 화면 크기 조각으로 자르고 빈 조각은 버립니다."""
+    from PIL import Image, ImageStat
+
+    img = Image.open(img_path).convert("RGB")
+    w, h = img.size
+    if w > 1440:
+        img = img.resize((1440, int(h * 1440 / w)))
+        w, h = img.size
+    chunk = int(w * 1.25)
+    if h <= chunk * 1.2:
+        out = out_stem.parent / f"{out_stem.name}_0.jpg"
+        img.save(out, quality=92)
+        return [out]
+    outs, y, k = [], 0, 0
+    step = int(chunk * 0.85)
+    while y < h:
+        box = (0, y, w, min(h, y + chunk))
+        part = img.crop(box)
+        if part.size[1] > chunk * 0.35 and max(ImageStat.Stat(part.convert("L")).stddev) > 8:
+            out = out_stem.parent / f"{out_stem.name}_{k}.jpg"
+            part.save(out, quality=92)
+            outs.append(out)
+            k += 1
+        y += step
+    return outs[:40]
 
 
 def remove_file(job: Job, index: int) -> None:
@@ -230,7 +275,7 @@ def start_write(job: Job, length: int, request: str) -> None:
 def _write(job: Job) -> None:
     frames = _frames(job)
     job.update(message="Claude가 원고와 업로드 글을 쓰는 중 (1~2분)")
-    a = llm.write(frames, job.durations, job.title, job.request, job.length)
+    a = llm.write(frames, job.durations, job.title, job.request, job.length, detail=job.mode == "detail")
     if not job.cleanup:
         job.cleanup = suggest_cleanup(a.text_regions)
     if not job.title:
@@ -263,7 +308,8 @@ def set_cleanup(job: Job, cleanup: dict) -> None:
 
 # ---------------------------------------------------------------- 만들기
 
-SETTINGS = ("voice", "rate", "ratio", "style", "bgm", "smart_cut", "title", "link")
+SETTINGS = ("voice", "rate", "ratio", "style", "bgm", "smart_cut", "title", "link", "graphic_theme",
+            "graphic_pos", "graphic_amount", "sfx_scene", "sfx_graphic", "beauty")
 
 
 def apply_settings(job: Job, data: dict) -> None:
@@ -277,6 +323,17 @@ def apply_settings(job: Job, data: dict) -> None:
     if job.bgm and not (config.BGM_DIR / job.bgm).is_file():
         job.bgm = ""
     job.rate = max(-30, min(50, int(job.rate)))
+    if job.graphic_theme not in graphics.THEMES:
+        job.graphic_theme = "basic"
+    if job.graphic_pos not in graphics.POSITIONS:
+        job.graphic_pos = "bottom"
+    if job.graphic_amount not in graphics.AMOUNTS:
+        job.graphic_amount = "none"
+    if job.beauty not in media.BEAUTY:
+        job.beauty = "none"
+    valid = set(sfx.names())
+    job.sfx_scene = job.sfx_scene if job.sfx_scene in valid else ""
+    job.sfx_graphic = job.sfx_graphic if job.sfx_graphic in valid else ""
 
 
 def set_script(job: Job, text: str, hook1: str, hook2: str, badge: str) -> None:
@@ -286,7 +343,7 @@ def set_script(job: Job, text: str, hook1: str, hook2: str, badge: str) -> None:
     lines = []
     for t in parsed["lines"]:
         prev = old.get(t)
-        lines.append(prev if prev else {"text": t, "clips": [], "orig_audio": False, "reason": ""})
+        lines.append(prev if prev else {"text": t, "clips": [], "orig_audio": False, "reason": "", "graphic": None, "sfx": ""})
     if not lines:
         raise ValueError("원고가 비어 있습니다. 한 줄에 한 문장씩 적어 주세요.")
     job.script = {
@@ -308,7 +365,14 @@ def set_lines(job: Job, lines: list[dict]) -> None:
             v = int(c.get("v", 0))
             if 0 <= v < nsrc:
                 clips.append({"v": v, "start": round(max(0.0, min(float(c.get("start", 0)), job.durations[v])), 2)})
-        out.append({"text": text, "clips": clips, "orig_audio": bool(ln.get("orig_audio")), "reason": ln.get("reason", "")})
+        g = ln.get("graphic")
+        if isinstance(g, dict) and g.get("type") in graphics.TYPES and (g.get("title") or g.get("items")):
+            g = {"type": g["type"], "title": str(g.get("title", ""))[:40], "items": [str(x)[:40] for x in (g.get("items") or [])][:4]}
+        else:
+            g = None
+        snd = str(ln.get("sfx", ""))
+        out.append({"text": text, "clips": clips, "orig_audio": bool(ln.get("orig_audio")), "reason": ln.get("reason", ""),
+                    "graphic": g, "sfx": snd if snd in ("", "-") or snd in sfx.names() else ""})
     if not out:
         raise ValueError("문장이 하나도 없습니다.")
     job.script["lines"] = out
@@ -319,11 +383,17 @@ def start_make(job: Job, rechoose: bool = False) -> None:
         raise ValueError("이미 작업 중입니다.")
     if not job.sources:
         raise ValueError("영상이나 사진을 먼저 넣어 주세요.")
-    if not job.script.get("lines"):
+    if job.mode != "talk" and not job.script.get("lines"):
         raise ValueError("원고가 비어 있습니다.")
+    if job.mode == "talk" and not any(p.get("keep") for p in job.talk.get("pieces", [])):
+        raise ValueError("남길 구간이 하나도 없습니다.")
     if rechoose:
         for ln in job.script["lines"]:
-            ln["clips"], ln["reason"] = [], ""
+            ln["clips"], ln["reason"], ln["graphic"] = [], "", None
+    if job.mode == "talk":
+        job.update(task="making", stage=2, started=time.time(), progress=0, error="", message="")
+        _bg(job, _talk_make)
+        return
     job.update(task="making", stage=0, started=time.time(), progress=0, error="", message="")
     _bg(job, _make)
 
@@ -377,11 +447,13 @@ def _make(job: Job) -> None:
         choices = []
         if ai_ready() and config.LLM_BACKEND != "mock":
             try:
-                choices = llm.pick_scenes(_frames(job), job.durations, [ln["text"] for ln in lines], seg_lens)
+                choices = llm.pick_scenes(_frames(job), job.durations, [ln["text"] for ln in lines], seg_lens,
+                                          job.graphic_amount)
             except Exception as exc:
                 print("[드롭컷] Claude 장면 고르기 실패, 자동 배치로 대신합니다:", exc)
         by_line = {c.line_index: c for c in choices}
         auto = manual.auto_place(seg_lens, job.durations)
+        auto_g = {} if choices else graphics.auto_graphics([ln["text"] for ln in lines], job.graphic_amount)
         nsrc = len(job.sources)
         for i in need:
             c = by_line.get(i)
@@ -390,9 +462,13 @@ def _make(job: Job) -> None:
                 if 0 <= c.second_video_index < nsrc and seg_lens[i] > 3:
                     clips.append({"v": c.second_video_index, "start": round(max(0.0, c.second_start_sec), 2)})
                 lines[i]["clips"], lines[i]["reason"] = clips, c.reason
+                if job.graphic_amount != "none" and c.graphic_type in graphics.TYPES and (c.graphic_title or c.graphic_items):
+                    lines[i]["graphic"] = {"type": c.graphic_type, "title": c.graphic_title, "items": c.graphic_items[:4]}
             else:
                 v, st = auto[i]
                 lines[i]["clips"], lines[i]["reason"] = [{"v": v, "start": st}], "영상 순서대로 자동 배치"
+                if i in auto_g:
+                    lines[i]["graphic"] = auto_g[i]
 
     # 어색한 컷 보정
     fixes = []
@@ -417,7 +493,7 @@ def _make(job: Job) -> None:
             v = c["v"]
             src = job.dir / job.sources[v]["path"]
             seg = work / f"v_{i:02d}_{k}.mp4"
-            media.make_segment(src, infos[v], c["start"], parts[k], seg, job.cleanup.get(str(v)), size)
+            media.make_segment(src, infos[v], c["start"], parts[k], seg, job.cleanup.get(str(v)), size, job.beauty)
             segs.append(seg)
             oa = work / f"o_{i:02d}_{k}.wav"
             media.segment_audio(src, infos[v], c["start"], parts[k], oa, bool(ln.get("orig_audio")))
@@ -437,8 +513,25 @@ def _make(job: Job) -> None:
         t += seg_lens[i]
     total = t
     sc = job.script
-    ass = subtitles.build_ass(sc["hook1"], sc["hook2"], cues, total, size, job.style, sc.get("badge", ""))
+    gfx, sfx_events, t, num = [], [], 0.0, 0
+    sub_y = subtitles.STYLES.get(job.style, subtitles.STYLES["insta"])["sub_y"]
+    for i, ln in enumerate(lines):
+        g = ln.get("graphic")
+        if g:
+            num += 1
+            gfx += graphics.events(g, t, t + seg_lens[i], size, job.graphic_theme, job.graphic_pos, num, sub_y)
+        snd = ln.get("sfx") or ""
+        if snd == "-":
+            snd = ""
+        elif not snd:
+            snd = job.sfx_graphic if (g and job.sfx_graphic) else (job.sfx_scene if i > 0 else "")
+        if snd:
+            sfx_events.append((t + (0.1 if g else 0.0), snd))
+        t += seg_lens[i]
+    ass = subtitles.build_ass(sc["hook1"], sc["hook2"], cues, total, size, job.style, sc.get("badge", ""),
+                              gfx, graphics.styles_block(size))
     (work / "subs.ass").write_text(ass, encoding="utf-8")
+    extras = [(work / "sfx.wav", 1.0)] if sfx.build_track(sfx_events, total, work / "sfx.wav") else []
 
     # 6. 미리보기 준비
     job.update(stage=5, message="영상 마무리하는 중")
@@ -446,7 +539,7 @@ def _make(job: Job) -> None:
     out_dir.mkdir(exist_ok=True)
     bgm = config.BGM_DIR / job.bgm if job.bgm else None
     media.final_render(work, work / "video.mp4", work / "narration.wav", work / "subs.ass", work / "final.mp4",
-                       bgm, work / "orig.wav" if use_orig else None)
+                       bgm, work / "orig.wav" if use_orig else None, extras)
     shutil.move(str(work / "final.mp4"), out_dir / "shorts.mp4")
     media.thumbnail(out_dir / "shorts.mp4", min(1.0, total / 2), out_dir / "cover.jpg")
     (out_dir / "subtitles.srt").write_text(subtitles.build_srt(cues), encoding="utf-8")
@@ -455,6 +548,102 @@ def _make(job: Job) -> None:
     (out_dir / "upload.txt").write_text(upload_text(job), encoding="utf-8")
     job.update(task="", stage=-1, status="done", progress=1.0, message="", duration=round(total, 2),
                elapsed=round(time.time() - job.started, 1))
+
+
+# ---------------------------------------------------------------- 컷·자막 자동 편집
+
+def start_talk(job: Job, level: str, drop_fillers: bool) -> None:
+    if job.task:
+        raise ValueError("이미 작업 중입니다.")
+    if not job.sources:
+        raise ValueError("영상을 먼저 넣어 주세요.")
+    job.update(task="analyzing", stage=0, started=time.time(), error="", message="소리 살펴보는 중",
+               talk={"level": level, "drop_fillers": drop_fillers})
+    _bg(job, _talk_analyze)
+
+
+def _talk_analyze(job: Job) -> None:
+    pieces, words, offset = [], [], 0.0
+    for vi, s in enumerate(job.sources):
+        src = job.dir / s["path"]
+
+        def msg(m):
+            job.update(message=f"{m} ({vi + 1}/{len(job.sources)})", stage=1 if "받아" in m else 0)
+        res = talk.analyze(src, job.dir / "talk" / f"v{vi}", job.durations[vi], job.talk["level"], job.talk["drop_fillers"], msg)
+        for p in res["pieces"]:
+            p["v"] = vi
+        for w in res["words"]:
+            w["v"] = vi
+        pieces += res["pieces"]
+        words += res["words"]
+    job.talk.update({"pieces": pieces, "words": words})
+    if not job.title:
+        job.title = Path(job.sources[0]["name"]).stem
+    if not job.upload:
+        job.upload = {}
+    # 받아쓰기가 끝나면 쉬지 않고 바로 이어서 만들기 (같은 작업 안에서)
+    job.update(task="making", stage=2, progress=0, message="구간 이어 붙이는 중")
+    _talk_make(job)
+
+
+def set_talk(job: Job, pieces: list[dict]) -> None:
+    old = job.talk.get("pieces", [])
+    out = []
+    for p in pieces:
+        v = int(p.get("v", 0))
+        if not 0 <= v < len(job.sources):
+            continue
+        d = job.durations[v]
+        st = max(0.0, min(float(p.get("start", 0)), d))
+        en = max(st + 0.1, min(float(p.get("end", 0)), d))
+        out.append({"v": v, "start": round(st, 3), "end": round(en, 3), "text": str(p.get("text", ""))[:200],
+                    "keep": bool(p.get("keep")), "note": str(p.get("note", ""))})
+    job.talk["pieces"] = out if out else old
+
+
+def _talk_make(job: Job) -> None:
+    size = media.size_of(job.ratio)
+    work = job.dir / "render"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    infos = [media.probe(job.dir / s["path"]) for s in job.sources]
+    keep = [p for p in job.talk["pieces"] if p.get("keep")]
+    words = job.talk.get("words", [])
+    segs, cues, t = [], [], 0.0
+    vf = media.BEAUTY.get(job.beauty, "")
+    for i, p in enumerate(keep):
+        job.update(message=f"구간 {i + 1}/{len(keep)}", progress=i / len(keep))
+        seg = work / f"p_{i:03d}.mkv"
+        talk.make_piece(job.dir / job.sources[p["v"]]["path"], infos[p["v"]], p["start"], p["end"], seg, size, vf)
+        segs.append(seg)
+        vw = [w for w in words if w.get("v", 0) == p["v"]]
+        cues += [subtitles.Cue(a, b, c) for a, b, c in talk.piece_cues(p, vw, t)]
+        t += media.frame_quantize(p["end"] - p["start"])
+    total = t
+    media.concat(segs, work / "joined.mkv")
+    media.run(["-i", "joined.mkv", "-map", "0:v", "-c", "copy", "video.mp4"], cwd=work)
+    media.run(["-i", "joined.mkv", "-map", "0:a", "-c:a", "pcm_s16le", "narration.wav"], cwd=work)
+
+    job.update(stage=3, message="자막·문구 만드는 중")
+    sc = job.script
+    ass = subtitles.build_ass(sc.get("hook1", ""), sc.get("hook2", ""), cues, total, size, job.style, sc.get("badge", ""))
+    (work / "subs.ass").write_text(ass, encoding="utf-8")
+
+    job.update(stage=4, message="영상 마무리하는 중")
+    out_dir = job.dir / "out"
+    out_dir.mkdir(exist_ok=True)
+    bgm = config.BGM_DIR / job.bgm if job.bgm else None
+    media.final_render(work, work / "video.mp4", work / "narration.wav", work / "subs.ass", work / "final.mp4", bgm)
+    shutil.move(str(work / "final.mp4"), out_dir / "shorts.mp4")
+    media.thumbnail(out_dir / "shorts.mp4", min(1.0, total / 2), out_dir / "cover.jpg")
+    (out_dir / "subtitles.srt").write_text(subtitles.build_srt(cues), encoding="utf-8")
+    if not job.upload:
+        job.upload = default_upload(job)
+    (out_dir / "upload.txt").write_text(upload_text(job), encoding="utf-8")
+    cut = sum(job.durations) - total
+    job.update(task="", stage=-1, status="done", progress=1.0, message="", duration=round(total, 2),
+               elapsed=round(time.time() - job.started, 1),
+               fixes=[f"말 없는 부분·군말 {cut:.1f}초를 잘라냈어요 ({sum(job.durations):.1f}초 → {total:.1f}초)"])
 
 
 # ---------------------------------------------------------------- 업로드 글
@@ -493,7 +682,10 @@ def reply_text(job: Job) -> str:
 
 def upload_text(job: Job) -> str:
     u = job.upload or default_upload(job)
-    narration = "\n".join(ln["text"] for ln in job.script.get("lines", []))
+    if job.mode == "talk":
+        narration = "\n".join(p["text"] for p in job.talk.get("pieces", []) if p.get("keep") and p.get("text"))
+    else:
+        narration = "\n".join(ln["text"] for ln in job.script.get("lines", []))
     return (
         f"[제목]\n{u.get('title', '')}\n\n[설명]\n{description_text(job)}\n\n"
         f"[답글·고정 댓글]\n{reply_text(job)}\n\n[DM 문구]\n{u.get('dm', '')}\n\n[나레이션 원고]\n{narration}\n"

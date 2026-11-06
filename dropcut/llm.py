@@ -109,10 +109,14 @@ def _call(system: str, content: list[dict], schema):
     return response.parsed_output
 
 
-def write(frames, durations: list[float], product: str, request: str, length: int) -> Analysis:
+def write(frames, durations: list[float], product: str, request: str, length: int, detail: bool = False) -> Analysis:
     if config.LLM_BACKEND == "mock":
         return _mock_write(durations, product, length)
     content = _frames_content(frames, durations)
+    if detail:
+        content.append({"type": "text", "text": "위 장면들은 쇼핑몰 상세페이지 이미지를 잘라 만든 것입니다. "
+                        "이미지 속 글(상품명·특징·수치·구성)을 꼼꼼히 읽고 그 내용에 근거해서만 쓰세요. "
+                        "text_regions는 빈 목록으로 두세요."})
     req = f"위 장면을 보고 상품을 분석한 뒤 원고 3안과 업로드 글을 써 주세요.\n길이: {LENGTHS.get(length, LENGTHS[30])}"
     if product:
         req += f"\n상품명: {product}"
@@ -136,6 +140,9 @@ class SceneChoice(BaseModel):
     second_video_index: int = Field(description="문장이 길어 장면 하나로 지루하면 이어 붙일 두 번째 영상 번호, 필요 없으면 -1")
     second_start_sec: float = Field(description="두 번째 장면 시작 시각(초), 없으면 0")
     reason: str = Field(description="이 장면을 고른 이유 한 문장")
+    graphic_type: str = Field(description="설명 그래픽 종류: none / point / check / compare / big")
+    graphic_title: str = Field(description="그래픽 제목(짧게, 14자 이내). 없으면 빈 문자열")
+    graphic_items: list[str] = Field(description="그래픽 항목(check는 2~3개, compare는 [전, 후] 2개, 나머지는 0~1개)")
 
 
 class ScenePlan(BaseModel):
@@ -147,15 +154,25 @@ SCENE_SYSTEM = """당신은 쇼핑쇼츠 영상 편집자입니다. 나레이션
 - 첫 문장에는 상품이 가장 또렷하게 보이는 장면.
 - 같은 장면을 연속으로 쓰지 말고 다양한 장면을 섞음.
 - 문장이 3초를 넘으면 두 번째 장면을 이어 붙여도 됨(second_video_index). 아니면 -1.
+
+설명 그래픽: 말만으로는 와닿지 않는 문장(기능·수치·비교·장점 정리)에만 붙이고 나머지는 none.
+- point: 핵심 기능 하나 강조 / check: 장점 2~3개 정리 / compare: 쓰기 전·후 비교 / big: 숫자·가격·한 단어 강조
+- 첫 문장(후킹)과 마지막 문장(행동 유도)에는 붙이지 말 것. 그래픽 글자는 짧게.
 """
 
+GRAPHIC_AMOUNT = {"none": "그래픽은 하나도 넣지 말 것(모두 none)", "few": "그래픽은 전체 문장의 20% 정도",
+                  "some": "그래픽은 전체 문장의 35% 정도", "many": "그래픽은 전체 문장의 55% 정도"}
 
-def pick_scenes(frames, durations: list[float], lines: list[str], lens: list[float]) -> list[SceneChoice]:
+
+
+def pick_scenes(frames, durations: list[float], lines: list[str], lens: list[float],
+                graphic_amount: str = "none") -> list[SceneChoice]:
     if config.LLM_BACKEND == "mock":
         return []
     content = _frames_content(frames, durations)
     listing = "\n".join(f"{i}. ({lens[i]:.1f}초) {t}" for i, t in enumerate(lines))
-    content.append({"type": "text", "text": f"나레이션 문장(번호. (길이) 문장):\n{listing}\n\n문장마다 장면을 골라 주세요."})
+    content.append({"type": "text", "text": f"나레이션 문장(번호. (길이) 문장):\n{listing}\n\n"
+                    f"문장마다 장면을 골라 주세요. {GRAPHIC_AMOUNT.get(graphic_amount, GRAPHIC_AMOUNT['none'])}."})
     plan: ScenePlan = _call(SCENE_SYSTEM, content, ScenePlan)
     return plan.choices
 

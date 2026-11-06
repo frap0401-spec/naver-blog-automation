@@ -166,12 +166,20 @@ def cleanup_filter(info: ProbeInfo, cleanup: dict | None) -> str:
     )
 
 
+BEAUTY = {
+    "none": "",
+    "light": "bilateral=sigmaS=2:sigmaR=0.05,eq=brightness=0.02:saturation=1.04",
+    "normal": "bilateral=sigmaS=4:sigmaR=0.08,eq=brightness=0.035:saturation=1.06:gamma=1.03",
+    "strong": "bilateral=sigmaS=6:sigmaR=0.12,eq=brightness=0.05:saturation=1.08:gamma=1.05",
+}
+
+
 def frame_quantize(seconds: float) -> float:
     return math.ceil(seconds * config.FPS) / config.FPS
 
 
 def make_segment(src: Path, info: ProbeInfo, start: float, duration: float, out: Path,
-                 cleanup: dict | None = None, size: tuple[int, int] = (1080, 1920)) -> None:
+                 cleanup: dict | None = None, size: tuple[int, int] = (1080, 1920), beauty: str = "none") -> None:
     """원본에서 start부터 duration만큼 잘라 세로 컷을 만듭니다. 원본이 짧으면 반복합니다."""
     start = max(0.0, min(start, max(0.0, info.duration - 0.3)))
     remaining = info.duration - start
@@ -184,7 +192,8 @@ def make_segment(src: Path, info: ProbeInfo, start: float, duration: float, out:
             start = 0.0
     args += [
         "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{duration:.3f}", "-an",
-        "-filter_complex", f"{cleanup_filter(info, cleanup)};[c]{_video_filter(_after_cleanup(info, cleanup), *size)}[v]",
+        "-filter_complex", f"{cleanup_filter(info, cleanup)};[c]{_video_filter(_after_cleanup(info, cleanup), *size)}"
+        f"{(',' + BEAUTY[beauty]) if BEAUTY.get(beauty) else ''}[v]",
         "-map", "[v]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", str(config.FPS),
         str(out),
@@ -245,7 +254,7 @@ def concat(files: list[Path], out: Path, copy: bool = True) -> None:
 
 
 def final_render(job_dir: Path, video: Path, narration: Path, ass: Path, out: Path, bgm: Path | None,
-                 orig: Path | None = None) -> None:
+                 orig: Path | None = None, extras: list[tuple[Path, float]] | None = None) -> None:
     """컷 영상 + 나레이션 + (배경음악) + 자막을 합쳐 최종 mp4를 만듭니다."""
     fonts = ""
     if any(config.FONTS_DIR.glob("*.[ot]tf")) or any(config.FONTS_DIR.glob("*.ttc")):
@@ -261,6 +270,11 @@ def final_render(job_dir: Path, video: Path, narration: Path, ass: Path, out: Pa
         args += ["-i", orig.name]
         pre += f"[{n}:a]volume=0.7[o];"
         mix.append("[o]")
+        n += 1
+    for k, (ep, vol) in enumerate(extras or []):
+        args += ["-i", ep.name if ep.parent == job_dir else str(ep)]
+        pre += f"[{n}:a]volume={vol}[e{k}];"
+        mix.append(f"[e{k}]")
         n += 1
     if bgm:
         args += ["-stream_loop", "-1", "-i", str(bgm)]

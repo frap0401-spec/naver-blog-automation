@@ -126,7 +126,8 @@ def _rich(text: str, base_color: str) -> str:
 
 
 def build_ass(title1: str, title2: str, cues: list[Cue], total: float,
-              size: tuple[int, int] = (1080, 1920), style: str = "insta", badge: str = "") -> str:
+              size: tuple[int, int] = (1080, 1920), style: str = "insta", badge: str = "",
+              extra_events: list[str] | None = None, extra_styles: str = "") -> str:
     st = STYLES.get(style, STYLES["insta"])
     w, h = size
     k = w / 1080 if w <= h else h / 1080 * 0.9  # 가로 화면은 글자를 조금 작게
@@ -146,7 +147,7 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 Style: Title,{f},{round(st['t1'] * k) or 10},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,-1,0,{box_style},{ol if not st['title_box'] else 14},3,8,30,30,0,1
 Style: Badge,{f},{round(44 * k)},&H00FFFFFF,&H00FFFFFF,{COLORS['red']},{COLORS['red']},-1,0,0,0,100,100,0,0,3,10,0,8,30,30,0,1
 Style: Sub,{f},{round(st['sub'] * k)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,-1,0,0,0,100,100,-1,0,{sub_box},{ol if not st['sub_box'] else 12},2,8,40,40,0,1
-
+{extra_styles}
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
@@ -156,7 +157,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     maxw = w - int(100 * k)
     if st["t1"]:
         if badge.strip():
-            lines.append(f"Dialogue: 2,{_ts(0)},{end},Badge,,0,0,0,,{{\\pos({cx},{int(h * st['badge_y'])})}}{_esc(badge.strip())}")
+            lines.append(f"Dialogue: 9,{_ts(0)},{end},Badge,,0,0,0,,{{\\pos({cx},{int(h * st['badge_y'])})}}{_esc(badge.strip())}")
         y = int(h * st["t1_y"]) + (int(30 * k) if badge.strip() else 0)
         for i, (text, key) in enumerate(((title1, "t1"), (title2, "t2"))):
             if not text.strip():
@@ -164,7 +165,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             color = st[f"{key}_color"]
             fs = _fit_size(text, round(st[key] * k), maxw)
             lines.append(
-                f"Dialogue: 1,{_ts(0)},{end},Title,,0,0,0,,"
+                f"Dialogue: 8,{_ts(0)},{end},Title,,0,0,0,,"
                 f"{{\\pos({cx},{y})\\fs{fs}\\c{COLORS[color]}}}{_rich(text, color)}"
             )
             y += int(h * st["t_gap"] * (fs / max(1, round(st[key] * k))) + 0.5) if i == 0 else 0
@@ -173,7 +174,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for c in cues:
         fs = _fit_size(c.text, sub_base, w - int(140 * k))
         pop = f"{{\\pos({cx},{int(h * st['sub_y'])})\\fs{fs}\\c{sub_color}\\fscx88\\fscy88\\t(0,90,\\fscx100\\fscy100)}}"
-        lines.append(f"Dialogue: 0,{_ts(c.start)},{_ts(c.end)},Sub,,0,0,0,,{pop}{_esc(c.text)}")
+        lines.append(f"Dialogue: 8,{_ts(c.start)},{_ts(c.end)},Sub,,0,0,0,,{pop}{_esc(c.text)}")
+    lines += extra_events or []
     return header + "\n".join(lines) + "\n"
 
 

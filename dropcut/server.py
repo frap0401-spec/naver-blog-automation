@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, manual, media, pipeline, subtitles, tts
+from . import config, graphics, manual, media, pipeline, sfx, subtitles, tts
 
 app = FastAPI(title="드롭컷")
 STATIC = Path(__file__).parent / "static"
@@ -53,6 +53,11 @@ def get_config():
         "styles": [{"id": k, "name": v["name"]} for k, v in subtitles.STYLES.items()],
         "ratios": list(media.RATIOS.keys()),
         "stages": pipeline.STAGES,
+        "talk_stages": pipeline.TALK_STAGES,
+        "sfx": sfx.names(),
+        "graphic_types": graphics.TYPES, "graphic_themes": {k: v["name"] for k, v in graphics.THEMES.items()},
+        "graphic_positions": graphics.POSITIONS, "graphic_amounts": graphics.AMOUNTS,
+        "beauty": {"none": "없음", "light": "약하게", "normal": "보통", "strong": "강하게"},
         "ai": pipeline.ai_ready(),
         "mock": config.LLM_BACKEND == "mock",
         "chat_prompt": manual.PROMPT_FOR_CHAT,
@@ -67,9 +72,10 @@ def projects():
 
 
 @app.post("/api/projects")
-async def create_project(files: list[UploadFile] = File(...), title: str = Form(""), link: str = Form("")):
+async def create_project(files: list[UploadFile] = File(...), title: str = Form(""), link: str = Form(""),
+                         mode: str = Form("auto")):
     items = await _read(files)
-    job = pipeline.create(title, link)
+    job = pipeline.create(title, link, mode)
     try:
         pipeline.add_files(job, items)
     except Exception as exc:
@@ -127,12 +133,35 @@ def write(job_id: str, req: WriteReq):
     return _public(job)
 
 
+class TalkReq(BaseModel):
+    level: str = "normal"
+    drop_fillers: bool = True
+    settings: dict = {}
+    hook1: str = ""
+    hook2: str = ""
+    badge: str = ""
+
+
+@app.post("/api/projects/{job_id}/talk")
+def talk_start(job_id: str, req: TalkReq):
+    """컷·자막 자동 편집 시작: 소리 분석 → 받아쓰기 → 자동으로 만들기까지."""
+    job = _job(job_id)
+    try:
+        pipeline.apply_settings(job, req.settings)
+        job.script.update({"hook1": req.hook1, "hook2": req.hook2, "badge": req.badge})
+        pipeline.start_talk(job, req.level if req.level in ("loose", "normal", "tight") else "normal", req.drop_fillers)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _public(job)
+
+
 class MakeReq(BaseModel):
     script_text: str | None = None
     hook1: str = ""
     hook2: str = ""
     badge: str = ""
     lines: list[dict] | None = None
+    pieces: list[dict] | None = None
     settings: dict = {}
     upload: dict | None = None
     rechoose: bool = False
@@ -155,6 +184,8 @@ def make(job_id: str, req: MakeReq):
             job.script.update({"hook1": req.hook1, "hook2": req.hook2, "badge": req.badge})
         if req.lines is not None:
             pipeline.set_lines(job, req.lines)
+        if req.pieces is not None:
+            pipeline.set_talk(job, req.pieces)
         if req.upload is not None:
             job.upload = {k: str(v) for k, v in req.upload.items()}
         job.save()
@@ -264,6 +295,14 @@ def download(job_id: str, kind: str, dl: int = 0):
         raise HTTPException(404, "아직 만들어지지 않았습니다.")
     base = (job.title or "shorts").replace("/", "_").replace("\\", "_")[:40]
     return FileResponse(path, media_type=mime, filename=f"{base}_{name}" if dl else None)
+
+
+@app.get("/api/sfx/{name}")
+def sfx_preview(name: str):
+    path = sfx.path(name)
+    if not path:
+        raise HTTPException(404)
+    return FileResponse(path)
 
 
 @app.get("/api/voices/{voice:path}/preview")

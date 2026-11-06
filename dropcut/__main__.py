@@ -34,9 +34,15 @@ def make(args) -> int:
     from . import pipeline, tts
 
     files = [(Path(p).name, Path(p).read_bytes()) for p in args.videos]
-    job = pipeline.create(args.name, args.link)
+    job = pipeline.create(args.name, args.link, args.mode)
     pipeline.add_files(job, files)
-    print(f"[1/4] 올리기 완료 · 프로젝트 {job.id}")
+    print(f"[1/4] 올리기 완료 · 프로젝트 {job.id} ({len(job.sources)}개 장면)")
+    common = {"ratio": args.ratio, "style": args.style, "bgm": args.bgm, "beauty": args.beauty}
+    if args.mode == "talk":
+        pipeline.apply_settings(job, common)
+        pipeline.start_talk(job, args.cut, True)
+        _wait(job)
+        return _finish(job, args)
     if args.script_file:
         text = Path(args.script_file).read_text(encoding="utf-8-sig")
         hook1 = hook2 = badge = ""
@@ -52,10 +58,15 @@ def make(args) -> int:
         text, hook1, hook2, badge = "\n".join(pick["lines"]), copy["line1"], copy["line2"], copy["badge"]
         print(f"[2/4] 원고 '{pick['style']}' 선택")
     pipeline.set_script(job, text, hook1, hook2, badge)
-    pipeline.apply_settings(job, {"voice": args.voice or tts.default_voice(), "rate": args.rate, "bgm": args.bgm,
-                                  "ratio": args.ratio, "style": args.style, "smart_cut": not args.no_smart_cut})
+    pipeline.apply_settings(job, {**common, "voice": args.voice or tts.default_voice(), "rate": args.rate,
+                                  "smart_cut": not args.no_smart_cut, "graphic_amount": args.graphics,
+                                  "sfx_scene": args.sfx, "sfx_graphic": "뿅" if args.sfx else ""})
     pipeline.start_make(job)
     _wait(job)
+    return _finish(job, args)
+
+
+def _finish(job, args) -> int:
     if job.status != "done" or job.error:
         print("오류:", job.error)
         return 1
@@ -84,6 +95,12 @@ def main() -> None:
     m.add_argument("--length", type=int, default=30, choices=[15, 30, 45], help="원고 길이(초)")
     m.add_argument("--ratio", default="9:16", choices=["9:16", "4:5", "1:1", "16:9"])
     m.add_argument("--style", default="insta", choices=["insta", "classic", "box", "minimal"])
+    m.add_argument("--mode", default="auto", choices=["auto", "detail", "talk"],
+                   help="auto=영상·사진 자동 제작, detail=상세페이지 이미지, talk=말하는 영상 컷·자막 편집")
+    m.add_argument("--cut", default="normal", choices=["loose", "normal", "tight"], help="talk: 자르는 정도")
+    m.add_argument("--graphics", default="none", choices=["none", "few", "some", "many"], help="그래픽 양")
+    m.add_argument("--sfx", default="", help="장면 바뀔 때 효과음 (예: 휙)")
+    m.add_argument("--beauty", default="none", choices=["none", "light", "normal", "strong"], help="얼굴 보정")
     m.add_argument("--link", default="", help="쿠팡 파트너스 링크")
     m.add_argument("--script", type=int, default=1, help="고를 원고 번호(1~3)")
     m.add_argument("--script-file", default="", help="직접 쓴 원고 txt (AI 대신 사용)")
