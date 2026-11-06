@@ -41,7 +41,7 @@ def make(args) -> int:
     pick = min(max(1, args.script), len(scripts)) - 1
     pipeline.choose_script(job, scripts[pick])
     print(f"[2/5] 원고 {pick + 1} 선택")
-    voice = args.voice or tts.VOICES[0]["id"]
+    voice = args.voice or tts.default_voice()
     print(f"[3/5] 목소리 {voice} (속도 {args.rate:+d}%)")
     pipeline.start_render(job, voice, args.rate, args.bgm)
     last = ""
@@ -76,7 +76,7 @@ def main() -> None:
     m.add_argument("--link", default="", help="쿠팡 파트너스 링크")
     m.add_argument("--script", type=int, default=1, help="고를 원고 번호(1~3)")
     m.add_argument("--script-file", default="", help="직접 쓴 원고 txt (AI 대신 사용)")
-    m.add_argument("--voice", default="", help="예: ko-KR-SunHiNeural")
+    m.add_argument("--voice", default="", help="예: edge:ko-KR-InJoonNeural:-10Hz 또는 el:<ElevenLabs voice_id>")
     m.add_argument("--rate", type=int, default=10, help="말 속도 %%")
     m.add_argument("--bgm", default="", help="assets/bgm 안의 파일명")
     m.add_argument("--out", default="output")

@@ -27,9 +27,10 @@ class Job:
     message: str = ""
     analysis: dict | None = None
     chosen: dict | None = None
-    voice: str = tts.VOICES[0]["id"]
+    voice: str = field(default_factory=tts.default_voice)
     rate: int = 10
     bgm: str = ""
+    cleanup: dict = field(default_factory=dict)  # {"0": {"mode": "crop", "box": [x,y,w,h]}}
     error: str = ""
     duration: float = 0.0
 
@@ -127,7 +128,33 @@ def _analyze(job: Job) -> None:
     result = llm.analyze(frames, job.durations, job.product_name, job.notes)
     if not job.product_name:
         job.product_name = result.product_name
+    job.cleanup = suggest_cleanup(result.text_regions)
     job.update(status="scripts_ready", progress=1.0, message="", analysis=result.model_dump())
+
+
+def suggest_cleanup(regions: list[llm.TextRegion]) -> dict:
+    """AI가 찾은 원본 글자 영역으로 영상별 지우기 설정을 미리 채웁니다."""
+    out: dict = {}
+    for r in regions:
+        key = str(r.video_index)
+        # 영상마다 가장 큰 영역 하나만 사용
+        if key in out and out[key]["box"][2] * out[key]["box"][3] >= r.w * r.h:
+            continue
+        band = r.w >= 0.5 and (r.y + r.h >= 0.75 or r.y <= 0.25)
+        out[key] = {"mode": "crop" if band else "blur", "box": [round(v, 3) for v in (r.x, r.y, r.w, r.h)]}
+    return out
+
+
+def set_cleanup(job: Job, cleanup: dict) -> None:
+    clean: dict = {}
+    for key, val in (cleanup or {}).items():
+        if not str(key).isdigit() or int(key) >= len(job.sources) or not isinstance(val, dict):
+            continue
+        mode = val.get("mode", "")
+        box = val.get("box") or []
+        if mode in ("crop", "blur", "erase") and len(box) == 4:
+            clean[str(int(key))] = {"mode": mode, "box": [round(min(1, max(0, float(v))), 4) for v in box]}
+    job.update(cleanup=clean)
 
 
 # 2) 원고 고르기 --------------------------------------------------------------
@@ -182,7 +209,8 @@ def _render(job: Job) -> None:
     for i, ln in enumerate(script.lines):
         seg = work / f"v_{i:02d}.mp4"
         src = job.dir / job.sources[ln.video_index]
-        media.make_segment(src, infos[ln.video_index], ln.start_sec, seg_lens[i], seg)
+        media.make_segment(src, infos[ln.video_index], ln.start_sec, seg_lens[i], seg,
+                           job.cleanup.get(str(ln.video_index)))
         segs.append(seg)
         job.update(progress=0.3 + 0.4 * (i + 1) / n)
 

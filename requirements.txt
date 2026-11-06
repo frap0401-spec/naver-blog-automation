@@ -5,3 +5,4 @@ python-multipart>=0.0.9
 pydantic>=2.7
 edge-tts>=7.0
 imageio-ffmpeg>=0.5
+elevenlabs>=2.0,<3

@@ -27,12 +27,24 @@ class Script(BaseModel):
     pinned_comment: str = Field(description="고정 댓글 문구(구매 링크 안내). 링크 자체는 넣지 말 것")
 
 
+class TextRegion(BaseModel):
+    video_index: int = Field(description="원본 영상 번호(0부터)")
+    kind: str = Field(description="자막 / 워터마크 / 로고 / 기타 글자")
+    x: float = Field(description="영역 왼쪽 위치, 화면 너비 대비 0~1")
+    y: float = Field(description="영역 위쪽 위치, 화면 높이 대비 0~1")
+    w: float = Field(description="영역 너비, 0~1")
+    h: float = Field(description="영역 높이, 0~1")
+
+
 class Analysis(BaseModel):
     product_name: str
     summary: str = Field(description="영상으로 파악한 상품 설명 2~3문장")
     selling_points: list[str]
     target: str = Field(description="주요 타깃 고객")
     scripts: list[Script] = Field(description="서로 다른 스타일의 원고 정확히 3개")
+    text_regions: list[TextRegion] = Field(
+        description="원본 영상에 이미 박혀 있는 자막·글자·워터마크 영역. 없으면 빈 목록",
+    )
 
 
 SYSTEM = """당신은 한국 쇼핑쇼츠(유튜브 쇼츠·인스타 릴스·네이버 클립) 전문 편집자이자 카피라이터입니다.
@@ -49,6 +61,11 @@ SYSTEM = """당신은 한국 쇼핑쇼츠(유튜브 쇼츠·인스타 릴스·�
 - 각 문장마다 그 내용을 가장 잘 보여주는 장면을 프레임 목록에서 골라 video_index와 start_sec을 지정.
 - 프레임 라벨의 [영상 n · t초]를 그대로 활용. 같은 장면을 연속으로 쓰지 말고 다양한 장면을 섞을 것.
 - 상품이 가장 잘 보이는 장면을 후킹과 상품 등장 문장에 배치.
+
+원본 글자 찾기:
+- 원본 영상에 이미 박혀 있는 자막(중국어·영어·한국어 등), 워터마크, 채널 로고가 있으면 text_regions에 적기.
+- 영상마다 여러 프레임에 걸쳐 나타나는 전체 범위를 넉넉하게 감싸는 사각형 하나로(자막은 보통 화면 아래 가로 띠).
+- 상품 자체에 인쇄된 글자(포장, 라벨)는 제외.
 """
 
 
@@ -102,6 +119,7 @@ def analyze(frames: list[tuple[int, float, Path]], durations: list[float], produ
 
 def _sanitize(a: Analysis, durations: list[float]) -> Analysis:
     n = len(durations)
+    a.text_regions = [r for r in a.text_regions if 0 <= r.video_index < n and r.w > 0.01 and r.h > 0.01]
     for s in a.scripts:
         s.hashtags = [h.lstrip("#").replace(" ", "") for h in s.hashtags if h.strip()]
         for ln in s.lines:
@@ -135,5 +153,7 @@ def _mock(frames: list[tuple[int, float, Path]], durations: list[float], product
             description=f"{name} 실제 사용 장면을 담았어요.", hashtags=["쇼핑", "추천템", "살림템"],
             pinned_comment="제품 정보는 아래 링크에서 확인하세요!",
         ))
+    regions = [TextRegion(video_index=0, kind="자막", x=0.05, y=0.78, w=0.9, h=0.12)]
     return _sanitize(Analysis(product_name=name, summary="테스트용 분석 결과입니다.",
-                              selling_points=["간편함", "디자인"], target="누구나", scripts=scripts), durations)
+                              selling_points=["간편함", "디자인"], target="누구나", scripts=scripts,
+                              text_regions=regions), durations)

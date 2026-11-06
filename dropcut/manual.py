@@ -110,4 +110,4 @@ def build(text: str, product_name: str, durations: list[float]) -> Analysis:
     script = auto_place(parse(text, product_name), durations)
     name = product_name or "직접 입력한 상품"
     return Analysis(product_name=name, summary="직접 입력한 원고입니다. 문장별 장면을 확인해 주세요.",
-                    selling_points=[], target="", scripts=[script])
+                    selling_points=[], target="", scripts=[script], text_regions=[])

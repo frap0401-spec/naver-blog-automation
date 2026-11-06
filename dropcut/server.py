@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, llm, manual, pipeline, tts
+from . import config, llm, manual, media, pipeline, tts
 
 app = FastAPI(title="드롭컷")
 STATIC = Path(__file__).parent / "static"
@@ -28,7 +28,7 @@ def _public(job: pipeline.Job) -> dict:
     data = {
         k: getattr(job, k)
         for k in ("id", "mode", "product_name", "link", "status", "progress", "message", "analysis",
-                  "chosen", "voice", "rate", "bgm", "error", "duration", "durations")
+                  "chosen", "voice", "rate", "bgm", "cleanup", "error", "duration", "durations")
     }
     if job.status == "done" and job.chosen:
         script = llm.Script.model_validate(job.chosen)
@@ -43,7 +43,8 @@ def _public(job: pipeline.Job) -> dict:
 @app.get("/api/config")
 def get_config():
     return {
-        "voices": tts.VOICES,
+        "voices": tts.all_voices(),
+        "eleven": bool(tts.ELEVEN_KEY),
         "bgm": pipeline.list_bgm(),
         "llm": config.LLM_BACKEND,
         "tts": config.TTS_BACKEND,
@@ -110,6 +111,51 @@ def choose_script(job_id: str, script: dict):
     return _public(job)
 
 
+@app.post("/api/jobs/{job_id}/cleanup")
+def set_cleanup(job_id: str, cleanup: dict):
+    job = _job(job_id)
+    pipeline.set_cleanup(job, cleanup)
+    return _public(job)
+
+
+@app.get("/api/jobs/{job_id}/thumb/{index}")
+def thumb(job_id: str, index: int, t: float = -1):
+    """원본 영상의 한 장면(자막 영역 지정용). t<0 이면 영상 가운데."""
+    job = _job(job_id)
+    if not 0 <= index < len(job.sources):
+        raise HTTPException(404)
+    if t < 0:
+        t = (job.durations[index] if index < len(job.durations) else 0) / 2
+    out = job.dir / "thumbs" / f"v{index}_{t:.1f}.jpg"
+    if not out.exists():
+        out.parent.mkdir(exist_ok=True)
+        try:
+            media.thumbnail(job.dir / job.sources[index], t, out)
+        except media.MediaError as exc:
+            raise HTTPException(500, str(exc))
+    return FileResponse(out, media_type="image/jpeg")
+
+
+@app.get("/api/jobs/{job_id}/cleanpreview/{index}")
+def clean_preview(job_id: str, index: int, t: float = -1):
+    """현재 지우기 설정을 적용한 결과 화면."""
+    job = _job(job_id)
+    if not 0 <= index < len(job.sources):
+        raise HTTPException(404)
+    src = job.dir / job.sources[index]
+    info = media.probe(src)
+    if t < 0:
+        t = info.duration / 2
+    out = job.dir / "thumbs" / f"p{index}_{hashlib.md5(repr((t, job.cleanup.get(str(index)))).encode()).hexdigest()[:8]}.jpg"
+    if not out.exists():
+        out.parent.mkdir(exist_ok=True)
+        try:
+            media.preview_frame(src, info, t, job.cleanup.get(str(index)), out)
+        except media.MediaError as exc:
+            raise HTTPException(500, str(exc))
+    return FileResponse(out, media_type="image/jpeg")
+
+
 class RenderReq(BaseModel):
     voice: str
     rate: int = 10
@@ -121,7 +167,7 @@ def render(job_id: str, req: RenderReq):
     job = _job(job_id)
     if job.status in ("analyzing", "rendering"):
         raise HTTPException(409, "이미 진행 중입니다.")
-    if req.voice not in {v["id"] for v in tts.VOICES}:
+    if not tts.is_known(req.voice):
         raise HTTPException(400, "알 수 없는 목소리입니다.")
     try:
         pipeline.start_render(job, req.voice, max(-30, min(50, req.rate)), req.bgm)
@@ -155,9 +201,9 @@ def source(job_id: str, index: int):
     return FileResponse(job.dir / job.sources[index])
 
 
-@app.get("/api/voices/{voice}/preview")
+@app.get("/api/voices/{voice:path}/preview")
 def voice_preview(voice: str, rate: int = 10):
-    if voice not in {v["id"] for v in tts.VOICES}:
+    if not tts.is_known(voice):
         raise HTTPException(404)
     rate = max(-30, min(50, rate))
     key = hashlib.md5(f"{voice}{rate}{config.TTS_BACKEND}".encode()).hexdigest()[:10]

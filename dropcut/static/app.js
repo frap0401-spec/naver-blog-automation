@@ -132,6 +132,89 @@ function renderScripts(job) {
     document.querySelectorAll(".script").forEach((x) => x.classList.toggle("sel", x === el));
   }));
   $("#btnScript").disabled = false;
+  renderCleanups(job);
+}
+
+/* ---------- 원본 자막 지우기 ---------- */
+const CLEAN_MODES = [["", "사용 안 함"], ["crop", "잘라내기 (가장 깔끔)"], ["blur", "흐리게"], ["erase", "주변색으로 지우기"]];
+const PRESETS = { "아래 자막": [0.03, 0.74, 0.94, 0.18], "위 글자": [0.03, 0.04, 0.94, 0.16], "오른쪽 위 로고": [0.68, 0.02, 0.3, 0.1] };
+
+function renderCleanups(job) {
+  state.cleanup = structuredClone(job.cleanup || {});
+  state.thumbT = job.durations.map((d) => d / 2);
+  $("#cleanups").innerHTML = job.durations.map((d, i) => `
+    <div class="clean" data-i="${i}">
+      <div><div class="muted">영상${i + 1} 원본 (드래그로 영역 지정)</div>
+        <div class="pick"><img src="/api/jobs/${job.id}/thumb/${i}?t=${state.thumbT[i].toFixed(1)}"><div class="box" hidden></div></div></div>
+      <div><div class="muted">결과</div><img class="after"></div>
+      <div class="ctrl">
+        <label>방법 <select class="cm">${CLEAN_MODES.map(([v, t]) => `<option value="${v}">${t}</option>`).join("")}</select></label>
+        <div class="row">${Object.keys(PRESETS).map((k) => `<button type="button" data-p="${k}">${k}</button>`).join("")}</div>
+        <div class="row"><button type="button" class="other">다른 장면 보기</button></div>
+        <div class="muted hint"></div>
+      </div>
+    </div>`).join("");
+  document.querySelectorAll(".clean").forEach(setupClean);
+}
+
+function setupClean(el) {
+  const i = el.dataset.i, key = String(i);
+  const pick = el.querySelector(".pick"), boxEl = el.querySelector(".box"), sel = el.querySelector(".cm");
+  const cur = () => state.cleanup[key];
+  const draw = () => {
+    const c = cur();
+    sel.value = c ? c.mode : "";
+    boxEl.hidden = !c;
+    if (c) Object.assign(boxEl.style, { left: c.box[0] * 100 + "%", top: c.box[1] * 100 + "%", width: c.box[2] * 100 + "%", height: c.box[3] * 100 + "%" });
+    el.querySelector(".hint").textContent = c && c.mode === "crop" && c.box[1] > 0.3 && c.box[1] + c.box[3] < 0.7 ? "가운데 영역은 잘라낼 수 없어 흐리게 처리됩니다." : "";
+  };
+  let timer;
+  const save = () => {
+    draw();
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      try {
+        const job = await api(`/api/jobs/${state.job.id}/cleanup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state.cleanup) });
+        state.job.cleanup = job.cleanup;
+        el.querySelector(".after").src = `/api/jobs/${state.job.id}/cleanpreview/${i}?t=${state.thumbT[i].toFixed(1)}&v=${Date.now()}`;
+      } catch (e) { showError(e.message); }
+    }, 350);
+  };
+  sel.onchange = () => {
+    if (!sel.value) delete state.cleanup[key];
+    else state.cleanup[key] = { mode: sel.value, box: cur() ? cur().box : PRESETS["아래 자막"] };
+    save();
+  };
+  el.querySelectorAll("[data-p]").forEach((b) => (b.onclick = () => {
+    state.cleanup[key] = { mode: cur() ? cur().mode : b.dataset.p === "아래 자막" || b.dataset.p === "위 글자" ? "crop" : "blur", box: PRESETS[b.dataset.p] };
+    save();
+  }));
+  el.querySelector(".other").onclick = () => {
+    const d = state.job.durations[i];
+    state.thumbT[i] = (state.thumbT[i] + d * 0.27) % d;
+    pick.querySelector("img").src = `/api/jobs/${state.job.id}/thumb/${i}?t=${state.thumbT[i].toFixed(1)}`;
+    save();
+  };
+  let start = null;
+  const pos = (e) => { const r = pick.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; };
+  pick.addEventListener("pointerdown", (e) => { start = pos(e); pick.setPointerCapture(e.pointerId); });
+  pick.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    const p = pos(e);
+    const box = [Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.abs(p[0] - start[0]), Math.abs(p[1] - start[1])];
+    state.cleanup[key] = { mode: cur() ? cur().mode : "blur", box };
+    draw();
+  });
+  pick.addEventListener("pointerup", () => {
+    if (!start) return;
+    start = null;
+    const c = cur();
+    if (c && (c.box[2] < 0.02 || c.box[3] < 0.02)) delete state.cleanup[key];
+    else if (c && c.box[2] > 0.5 && (c.box[1] + c.box[3] > 0.7 || c.box[1] < 0.3)) c.mode = sel.value || "crop";
+    save();
+  });
+  draw();
+  el.querySelector(".after").src = `/api/jobs/${state.job.id}/cleanpreview/${i}?t=${state.thumbT[i].toFixed(1)}`;
 }
 
 function collectScript() {
@@ -161,11 +244,19 @@ $("#btnScript").onclick = async () => {
 /* ---------- 3. 목소리 고르기 ---------- */
 const audio = new Audio();
 function renderVoices() {
-  $("#voices").innerHTML = state.cfg.voices.map((v) => `
-    <div class="voice ${v.id === state.voice ? "sel" : ""}" data-id="${v.id}">
-      <div><b>${esc(v.name)}</b><div class="muted">${esc(v.desc)}</div></div>
-      <button title="미리 듣기">▶</button>
-    </div>`).join("");
+  const groups = {};
+  state.cfg.voices.forEach((v) => (groups[v.provider] ||= []).push(v));
+  let html = "";
+  for (const [g, list] of Object.entries(groups)) {
+    html += `<div class="vgroup">${esc(g)} <span class="muted">${list.length}명</span></div>`;
+    html += list.map((v) => `
+      <div class="voice ${v.id === state.voice ? "sel" : ""}" data-id="${esc(v.id)}">
+        <div><b>${esc(v.name)}</b><div class="muted">${esc(v.desc)}</div></div>
+        <button title="미리 듣기">▶</button>
+      </div>`).join("");
+  }
+  if (!state.cfg.eleven) html += `<div class="vgroup muted">ElevenLabs 목소리를 쓰려면 .env 파일에 ELEVENLABS_API_KEY 를 넣고 다시 실행하세요.</div>`;
+  $("#voices").innerHTML = html;
   document.querySelectorAll(".voice").forEach((el) => {
     el.addEventListener("click", () => {
       state.voice = el.dataset.id;
@@ -177,7 +268,7 @@ function renderVoices() {
       const btn = e.currentTarget;
       btn.textContent = "…";
       try {
-        const res = await fetch(`/api/voices/${el.dataset.id}/preview?rate=${$("#rate").value}`);
+        const res = await fetch(`/api/voices/${encodeURIComponent(el.dataset.id)}/preview?rate=${$("#rate").value}`);
         if (!res.ok) throw new Error((await res.json()).detail);
         audio.src = URL.createObjectURL(await res.blob());
         await audio.play();

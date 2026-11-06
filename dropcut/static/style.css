@@ -46,6 +46,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .voices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .voice { border: 2px solid var(--line); border-radius: 14px; padding: 14px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .voice.sel { border-color: var(--accent); background: var(--sel); }
+.vgroup { grid-column: 1 / -1; font-weight: 800; font-size: 14px; margin-top: 6px; }
 .voice b { font-size: 17px; }
 .voice button { border-radius: 99px; width: 40px; height: 40px; padding: 0; flex: none; }
 .result { display: grid; grid-template-columns: 340px 1fr; gap: 20px; }
@@ -68,7 +69,19 @@ pre { white-space: pre-wrap; background: #0f1115; border: 1px solid var(--line);
 .cut select, .cut input { width: auto; margin: 0 2px; padding: 2px 6px; font-size: 12px; border-radius: 6px; }
 .cut input { width: 64px; }
 .scripts.one { grid-template-columns: minmax(0, 560px); }
+h3.sub { margin: 26px 0 4px; font-size: 16px; }
+.clean { display: grid; grid-template-columns: 240px 140px 1fr; gap: 14px; align-items: start; border-top: 1px solid var(--line); padding: 14px 0; }
+.clean .pick { position: relative; user-select: none; touch-action: none; cursor: crosshair; line-height: 0; }
+.clean .pick img { width: 100%; border-radius: 8px; pointer-events: none; }
+.clean .box { position: absolute; border: 2px solid var(--accent); background: rgba(255, 212, 0, .25); pointer-events: none; }
+.clean .after { width: 100%; border-radius: 8px; background: #000; min-height: 100px; }
+.clean .ctrl { display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.clean .ctrl .row { margin: 0; gap: 6px; }
+.clean .ctrl button { padding: 6px 10px; font-size: 13px; }
+.clean .ctrl select { margin: 0; }
 @media (max-width: 860px) {
+  .clean { grid-template-columns: 1fr 1fr; }
+  .clean .ctrl { grid-column: 1 / -1; }
   .scripts, .voices, .grid2, .result, .modes { grid-template-columns: 1fr; }
   header { padding: 12px 16px; }
 }

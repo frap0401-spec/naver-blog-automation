@@ -26,8 +26,9 @@ if not defined PY (
 )
 
 rem ---- 2. 처음 한 번만 필요한 프로그램 설치 ----
-if not exist ".venv\installed.ok" (
-  echo [드롭컷] 처음 실행이라 필요한 프로그램을 설치합니다. 2~5분 걸려요...
+fc /b requirements.txt ".venv\requirements.installed" >nul 2>&1
+if errorlevel 1 (
+  echo [드롭컷] 필요한 프로그램을 설치(업데이트)합니다. 2~5분 걸려요...
   if not exist ".venv\Scripts\python.exe" %PY% -m venv .venv
   ".venv\Scripts\python.exe" -m pip install --upgrade pip >nul
   ".venv\Scripts\python.exe" -m pip install -r requirements.txt
@@ -37,7 +38,7 @@ if not exist ".venv\installed.ok" (
     pause
     exit /b 1
   )
-  echo ok> ".venv\installed.ok"
+  copy /y requirements.txt ".venv\requirements.installed" >nul
 )
 
 rem ---- 3. 실행 ----

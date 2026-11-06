@@ -101,11 +101,47 @@ def _video_filter(info: ProbeInfo) -> str:
     )
 
 
+def cleanup_filter(info: ProbeInfo, cleanup: dict | None) -> str:
+    """원본에 박힌 자막·워터마크 영역 처리 필터. 입력 [0:v] → 출력 [c].
+
+    cleanup = {"mode": "crop" | "blur" | "erase", "box": [x, y, w, h]}  (0~1 비율 좌표)
+    - crop : 그 영역이 있는 위/아래 띠를 잘라내고 나머지로 화면을 채움 (가장 깔끔)
+    - blur : 그 영역만 강하게 흐림
+    - erase: 주변 색으로 메워 지움 (작은 글자·로고에 적합)
+    """
+    mode = (cleanup or {}).get("mode", "")
+    box = (cleanup or {}).get("box") or []
+    if mode not in ("crop", "blur", "erase") or len(box) != 4 or not info.width or not info.height:
+        return "[0:v]null[c]"
+    x, y, w, h = (min(1.0, max(0.0, float(v))) for v in box)
+    w, h = min(w, 1 - x), min(h, 1 - y)
+    if w < 0.01 or h < 0.01:
+        return "[0:v]null[c]"
+    if mode == "crop":
+        above, below = y, 1 - (y + h)
+        if max(above, below) >= 0.4:
+            if above >= below:
+                return f"[0:v]crop=iw:trunc(ih*{above:.4f}/2)*2:0:0[c]"
+            return f"[0:v]crop=iw:trunc(ih*{below:.4f}/2)*2:0:trunc(ih*{y + h:.4f}/2)*2[c]"
+        mode = "blur"  # 가운데 영역은 잘라낼 수 없으니 흐림으로 대체
+    W, H = info.width, info.height
+    px, py = max(1, int(x * W)), max(1, int(y * H))
+    pw, ph = max(4, min(int(w * W), W - px - 1)), max(4, min(int(h * H), H - py - 1))
+    if mode == "erase":
+        return f"[0:v]delogo=x={px}:y={py}:w={pw}:h={ph}[c]"
+    r = max(4, min(pw, ph) // 6)
+    return (
+        f"[0:v]split=2[c0][c1];[c1]crop={pw}:{ph}:{px}:{py},boxblur={r}:4[cb];"
+        f"[c0][cb]overlay={px}:{py}[c]"
+    )
+
+
 def frame_quantize(seconds: float) -> float:
     return math.ceil(seconds * config.FPS) / config.FPS
 
 
-def make_segment(src: Path, info: ProbeInfo, start: float, duration: float, out: Path) -> None:
+def make_segment(src: Path, info: ProbeInfo, start: float, duration: float, out: Path,
+                 cleanup: dict | None = None) -> None:
     """원본에서 start부터 duration만큼 잘라 세로 컷을 만듭니다. 원본이 짧으면 반복합니다."""
     start = max(0.0, min(start, max(0.0, info.duration - 0.3)))
     remaining = info.duration - start
@@ -118,11 +154,35 @@ def make_segment(src: Path, info: ProbeInfo, start: float, duration: float, out:
             start = 0.0
     args += [
         "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{duration:.3f}", "-an",
-        "-filter_complex", f"[0:v]{_video_filter(info)}[v]", "-map", "[v]",
+        "-filter_complex", f"{cleanup_filter(info, cleanup)};[c]{_video_filter(_after_cleanup(info, cleanup))}[v]",
+        "-map", "[v]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", str(config.FPS),
         str(out),
     ]
     run(args)
+
+
+def _after_cleanup(info: ProbeInfo, cleanup: dict | None) -> ProbeInfo:
+    """잘라내기 후의 화면 비율로 레이아웃(세로 채우기/흐린 배경)을 정합니다."""
+    f = cleanup_filter(info, cleanup)
+    m = re.search(r"crop=iw:trunc\(ih\*([\d.]+)/2\)", f)
+    if not m:
+        return info
+    return ProbeInfo(info.duration, info.width, int(info.height * float(m.group(1))), info.has_audio)
+
+
+def thumbnail(src: Path, t: float, out: Path) -> None:
+    run(["-ss", f"{max(0.0, t):.2f}", "-i", str(src), "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4", str(out)])
+
+
+def preview_frame(src: Path, info: ProbeInfo, t: float, cleanup: dict | None, out: Path) -> None:
+    """지우기 설정을 적용한 세로 화면 한 장(미리보기)."""
+    layout = _video_filter(_after_cleanup(info, cleanup))
+    run([
+        "-ss", f"{max(0.0, t):.2f}", "-i", str(src), "-frames:v", "1",
+        "-filter_complex", f"{cleanup_filter(info, cleanup)};[c]{layout}[l];[l]scale=360:-2[v]",
+        "-map", "[v]", "-q:v", "4", str(out),
+    ])
 
 
 def to_wav(src: Path, out: Path, total: float) -> None:
