@@ -21,46 +21,52 @@ def serve(host: str, port: int, open_browser: bool) -> None:
     uvicorn.run("dropcut.server:app", host=host, port=port, log_level="warning")
 
 
-def make(args) -> int:
-    from . import pipeline, tts
-
-    files = [(Path(p).name, Path(p).read_bytes()) for p in args.videos]
-    script_text = Path(args.script_file).read_text(encoding="utf-8-sig") if args.script_file else ""
-    mode = "manual" if script_text else "ai"
-    job = pipeline.create(files, args.name, args.notes, args.link, mode, script_text)
-    print(f"[1/5] 올리기 완료 · 작업 {job.id}")
-    pipeline.start_analysis(job)
-    while job.status == "analyzing":
-        time.sleep(1)
-    if job.status == "error":
-        print("오류:", job.error)
-        return 1
-    scripts = job.analysis["scripts"]
-    for i, s in enumerate(scripts):
-        print(f"  원고 {i + 1} [{s['style']}] {s['hook_line1']} / {s['hook_line2']}")
-    pick = min(max(1, args.script), len(scripts)) - 1
-    pipeline.choose_script(job, scripts[pick])
-    print(f"[2/5] 원고 {pick + 1} 선택")
-    voice = args.voice or tts.default_voice()
-    print(f"[3/5] 목소리 {voice} (속도 {args.rate:+d}%)")
-    pipeline.start_render(job, voice, args.rate, args.bgm, not args.no_smart_cut)
+def _wait(job) -> None:
     last = ""
-    while job.status == "rendering":
+    while job.task:
         if job.message != last:
             print("   ", job.message)
             last = job.message
         time.sleep(0.5)
-    if job.status == "error":
+
+
+def make(args) -> int:
+    from . import pipeline, tts
+
+    files = [(Path(p).name, Path(p).read_bytes()) for p in args.videos]
+    job = pipeline.create(args.name, args.link)
+    pipeline.add_files(job, files)
+    print(f"[1/4] 올리기 완료 · 프로젝트 {job.id}")
+    if args.script_file:
+        text = Path(args.script_file).read_text(encoding="utf-8-sig")
+        hook1 = hook2 = badge = ""
+    else:
+        pipeline.start_write(job, args.length, args.notes)
+        _wait(job)
+        if job.error:
+            print("오류:", job.error)
+            return 1
+        scripts = job.analysis["scripts"]
+        pick = scripts[min(max(1, args.script), len(scripts)) - 1]
+        copy = pick["thumb_copies"][0] if pick["thumb_copies"] else {"line1": "", "line2": "", "badge": ""}
+        text, hook1, hook2, badge = "\n".join(pick["lines"]), copy["line1"], copy["line2"], copy["badge"]
+        print(f"[2/4] 원고 '{pick['style']}' 선택")
+    pipeline.set_script(job, text, hook1, hook2, badge)
+    pipeline.apply_settings(job, {"voice": args.voice or tts.default_voice(), "rate": args.rate, "bgm": args.bgm,
+                                  "ratio": args.ratio, "style": args.style, "smart_cut": not args.no_smart_cut})
+    pipeline.start_make(job)
+    _wait(job)
+    if job.status != "done" or job.error:
         print("오류:", job.error)
         return 1
-    print(f"[4/5] 만들기 완료 ({job.duration:.1f}초)")
+    print(f"[3/4] 만들기 완료 ({job.duration:.1f}초, {job.elapsed:.0f}초 걸림)")
     for f in job.fixes:
         print("    컷 보정:", f)
     out = Path(args.out or ".").resolve()
     out.mkdir(parents=True, exist_ok=True)
     for name in ("shorts.mp4", "upload.txt", "subtitles.srt"):
         shutil.copy(job.dir / "out" / name, out / f"{job.id}_{name}")
-    print(f"[5/5] 내보내기: {out}/{job.id}_shorts.mp4")
+    print(f"[4/4] 내보내기: {out}/{job.id}_shorts.mp4")
     return 0
 
 
@@ -74,12 +80,15 @@ def main() -> None:
     m = sub.add_parser("make", help="한 번에 자동으로 만들기")
     m.add_argument("videos", nargs="+")
     m.add_argument("--name", default="", help="상품명")
-    m.add_argument("--notes", default="", help="강조할 특징 메모")
+    m.add_argument("--notes", default="", help="추가 요청 (예: 자취하는 20대에게, 친근하게)")
+    m.add_argument("--length", type=int, default=30, choices=[15, 30, 45], help="원고 길이(초)")
+    m.add_argument("--ratio", default="9:16", choices=["9:16", "4:5", "1:1", "16:9"])
+    m.add_argument("--style", default="insta", choices=["insta", "classic", "box", "minimal"])
     m.add_argument("--link", default="", help="쿠팡 파트너스 링크")
     m.add_argument("--script", type=int, default=1, help="고를 원고 번호(1~3)")
     m.add_argument("--script-file", default="", help="직접 쓴 원고 txt (AI 대신 사용)")
     m.add_argument("--voice", default="", help="예: edge:ko-KR-InJoonNeural:-10Hz 또는 el:<ElevenLabs voice_id>")
-    m.add_argument("--rate", type=int, default=10, help="말 속도 %%")
+    m.add_argument("--rate", type=int, default=5, help="말 속도 %%")
     m.add_argument("--bgm", default="", help="assets/bgm 안의 파일명")
     m.add_argument("--no-smart-cut", action="store_true", help="어색한 컷 자동 보정 끄기")
     m.add_argument("--out", default="output")

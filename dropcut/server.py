@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-import os
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -10,34 +10,38 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, llm, manual, media, pipeline, tts
+from . import config, manual, media, pipeline, subtitles, tts
 
 app = FastAPI(title="드롭컷")
 STATIC = Path(__file__).parent / "static"
-ALLOWED = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+ALLOWED = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"} | media.IMAGE_EXT
 
 
 def _job(job_id: str) -> pipeline.Job:
     job = pipeline.get(job_id)
     if not job:
-        raise HTTPException(404, "작업을 찾을 수 없습니다.")
+        raise HTTPException(404, "프로젝트를 찾을 수 없습니다.")
     return job
 
 
 def _public(job: pipeline.Job) -> dict:
-    data = {
-        k: getattr(job, k)
-        for k in ("id", "mode", "product_name", "link", "status", "progress", "message", "analysis",
-                  "chosen", "voice", "rate", "bgm", "cleanup", "smart_cut", "fixes", "error", "duration", "durations")
-    }
-    if job.status == "done" and job.chosen:
-        script = llm.Script.model_validate(job.chosen)
+    data = asdict(job)
+    data["ai"] = pipeline.ai_ready()
+    if job.status == "done":
         data["export"] = {
-            "title": script.title,
-            "description": pipeline.description_text(job, script),
-            "pinned": pipeline.pinned_text(job, script),
+            "description": pipeline.description_text(job),
+            "reply": pipeline.reply_text(job),
         }
     return data
+
+
+async def _read(files: list[UploadFile]) -> list[tuple[str, bytes]]:
+    items = []
+    for f in files:
+        if Path(f.filename or "").suffix.lower() not in ALLOWED:
+            raise HTTPException(400, f"지원하지 않는 형식입니다: {f.filename}")
+        items.append((f.filename or "video.mp4", await f.read()))
+    return items
 
 
 @app.get("/api/config")
@@ -46,164 +50,224 @@ def get_config():
         "voices": tts.all_voices(),
         "eleven": bool(tts.ELEVEN_KEY),
         "bgm": pipeline.list_bgm(),
-        "llm": config.LLM_BACKEND,
-        "tts": config.TTS_BACKEND,
-        "has_key": bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")),
-        "format_guide": manual.FORMAT_GUIDE,
+        "styles": [{"id": k, "name": v["name"]} for k, v in subtitles.STYLES.items()],
+        "ratios": list(media.RATIOS.keys()),
+        "stages": pipeline.STAGES,
+        "ai": pipeline.ai_ready(),
+        "mock": config.LLM_BACKEND == "mock",
         "chat_prompt": manual.PROMPT_FOR_CHAT,
     }
 
 
-@app.post("/api/jobs")
-async def create_job(
-    files: list[UploadFile] = File(...),
-    product_name: str = Form(""),
-    notes: str = Form(""),
-    link: str = Form(""),
-    mode: str = Form("ai"),
-    script_text: str = Form(""),
-):
-    items = []
-    for f in files:
-        if Path(f.filename or "").suffix.lower() not in ALLOWED:
-            raise HTTPException(400, f"지원하지 않는 형식입니다: {f.filename}")
-        items.append((f.filename or "video.mp4", await f.read()))
-    if not items:
-        raise HTTPException(400, "영상을 올려 주세요.")
-    if len(items) > 10:
-        raise HTTPException(400, "영상은 최대 10개까지 올릴 수 있습니다.")
-    if mode == "ai" and config.LLM_BACKEND == "claude" and not (
-        os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")
-    ):
-        raise HTTPException(400, "AI 자동 원고를 쓰려면 .env에 ANTHROPIC_API_KEY를 넣어 주세요. 키가 없으면 '원고 직접 입력'을 선택하세요.")
+# ---------------------------------------------------------------- 프로젝트
+
+@app.get("/api/projects")
+def projects():
+    return pipeline.list_jobs()
+
+
+@app.post("/api/projects")
+async def create_project(files: list[UploadFile] = File(...), title: str = Form(""), link: str = Form("")):
+    items = await _read(files)
+    job = pipeline.create(title, link)
     try:
-        job = pipeline.create(items, product_name, notes, link, mode, script_text)
-    except ValueError as exc:
+        pipeline.add_files(job, items)
+    except Exception as exc:
+        pipeline.delete(job)
         raise HTTPException(400, str(exc))
-    pipeline.start_analysis(job)
     return _public(job)
 
 
-@app.get("/api/jobs/{job_id}")
-def job_status(job_id: str):
+@app.get("/api/projects/{job_id}")
+def project(job_id: str):
     return _public(_job(job_id))
 
 
-@app.post("/api/jobs/{job_id}/retry")
-def retry(job_id: str):
+@app.delete("/api/projects/{job_id}")
+def delete_project(job_id: str):
     job = _job(job_id)
-    if job.status in ("analyzing", "rendering"):
-        raise HTTPException(409, "이미 진행 중입니다.")
-    if job.chosen and job.analysis:
-        pipeline.start_render(job, job.voice, job.rate, job.bgm)
-    else:
-        pipeline.start_analysis(job)
-    return _public(job)
+    if job.task:
+        raise HTTPException(409, "작업 중에는 지울 수 없습니다.")
+    pipeline.delete(job)
+    return {"ok": True}
 
 
-@app.post("/api/jobs/{job_id}/script")
-def choose_script(job_id: str, script: dict):
+@app.post("/api/projects/{job_id}/files")
+async def add_files(job_id: str, files: list[UploadFile] = File(...)):
     job = _job(job_id)
     try:
-        pipeline.choose_script(job, script)
+        pipeline.add_files(job, await _read(files))
     except Exception as exc:
-        raise HTTPException(400, f"원고 형식이 올바르지 않습니다: {exc}")
+        raise HTTPException(400, str(exc))
     return _public(job)
 
 
-@app.post("/api/jobs/{job_id}/cleanup")
+@app.delete("/api/projects/{job_id}/files/{index}")
+def remove_file(job_id: str, index: int):
+    job = _job(job_id)
+    pipeline.remove_file(job, index)
+    return _public(job)
+
+
+class WriteReq(BaseModel):
+    length: int = 30
+    request: str = ""
+    title: str = ""
+
+
+@app.post("/api/projects/{job_id}/write")
+def write(job_id: str, req: WriteReq):
+    job = _job(job_id)
+    if req.title:
+        job.title = req.title.strip()
+    try:
+        pipeline.start_write(job, req.length, req.request)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _public(job)
+
+
+class MakeReq(BaseModel):
+    script_text: str | None = None
+    hook1: str = ""
+    hook2: str = ""
+    badge: str = ""
+    lines: list[dict] | None = None
+    settings: dict = {}
+    upload: dict | None = None
+    rechoose: bool = False
+    save_only: bool = False
+
+
+@app.post("/api/projects/{job_id}/make")
+def make(job_id: str, req: MakeReq):
+    """원고·설정을 저장하고 (save_only가 아니면) 영상을 만듭니다."""
+    job = _job(job_id)
+    if job.task:
+        raise HTTPException(409, "이미 작업 중입니다.")
+    if req.settings.get("voice") and not tts.is_known(req.settings["voice"]):
+        raise HTTPException(400, "알 수 없는 목소리입니다.")
+    try:
+        pipeline.apply_settings(job, req.settings)
+        if req.script_text is not None:
+            pipeline.set_script(job, req.script_text, req.hook1, req.hook2, req.badge)
+        else:
+            job.script.update({"hook1": req.hook1, "hook2": req.hook2, "badge": req.badge})
+        if req.lines is not None:
+            pipeline.set_lines(job, req.lines)
+        if req.upload is not None:
+            job.upload = {k: str(v) for k, v in req.upload.items()}
+        job.save()
+        if not req.save_only:
+            pipeline.start_make(job, req.rechoose)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _public(job)
+
+
+@app.post("/api/projects/{job_id}/cleanup")
 def set_cleanup(job_id: str, cleanup: dict):
     job = _job(job_id)
     pipeline.set_cleanup(job, cleanup)
     return _public(job)
 
 
-@app.get("/api/jobs/{job_id}/thumb/{index}")
-def thumb(job_id: str, index: int, t: float = -1):
-    """원본 영상의 한 장면(자막 영역 지정용). t<0 이면 영상 가운데."""
-    job = _job(job_id)
+# ---------------------------------------------------------------- 이미지·파일
+
+def _src(job: pipeline.Job, index: int) -> Path:
     if not 0 <= index < len(job.sources):
         raise HTTPException(404)
-    if t < 0:
-        t = (job.durations[index] if index < len(job.durations) else 0) / 2
-    out = job.dir / "thumbs" / f"v{index}_{t:.1f}.jpg"
+    return job.dir / job.sources[index]["path"]
+
+
+def _cached_image(out: Path, make) -> FileResponse:
     if not out.exists():
-        out.parent.mkdir(exist_ok=True)
+        out.parent.mkdir(parents=True, exist_ok=True)
         try:
-            media.thumbnail(job.dir / job.sources[index], t, out)
+            make(out)
         except media.MediaError as exc:
             raise HTTPException(500, str(exc))
     return FileResponse(out, media_type="image/jpeg")
 
 
-@app.get("/api/jobs/{job_id}/cleanpreview/{index}")
-def clean_preview(job_id: str, index: int, t: float = -1):
-    """현재 지우기 설정을 적용한 결과 화면."""
+@app.get("/api/projects/{job_id}/thumb/{index}")
+def thumb(job_id: str, index: int, t: float = -1):
     job = _job(job_id)
-    if not 0 <= index < len(job.sources):
-        raise HTTPException(404)
-    src = job.dir / job.sources[index]
+    src = _src(job, index)
+    if t < 0:
+        t = job.durations[index] / 3
+    return _cached_image(job.dir / "thumbs" / f"{src.stem}_{t:.1f}.jpg", lambda o: media.thumbnail(src, t, o))
+
+
+@app.get("/api/projects/{job_id}/strip/{index}")
+def strip(job_id: str, index: int):
+    job = _job(job_id)
+    src = _src(job, index)
+    return _cached_image(job.dir / "thumbs" / f"{src.stem}_strip.jpg",
+                         lambda o: media.filmstrip(src, job.durations[index], o))
+
+
+@app.get("/api/projects/{job_id}/cleanpreview/{index}")
+def clean_preview(job_id: str, index: int, t: float = -1):
+    job = _job(job_id)
+    src = _src(job, index)
     info = media.probe(src)
     if t < 0:
         t = info.duration / 2
-    out = job.dir / "thumbs" / f"p{index}_{hashlib.md5(repr((t, job.cleanup.get(str(index)))).encode()).hexdigest()[:8]}.jpg"
-    if not out.exists():
-        out.parent.mkdir(exist_ok=True)
-        try:
-            media.preview_frame(src, info, t, job.cleanup.get(str(index)), out)
-        except media.MediaError as exc:
-            raise HTTPException(500, str(exc))
-    return FileResponse(out, media_type="image/jpeg")
+    c = job.cleanup.get(str(index))
+    key = hashlib.md5(repr((t, c, job.ratio)).encode()).hexdigest()[:8]
+    return _cached_image(job.dir / "thumbs" / f"p{src.stem}_{key}.jpg",
+                         lambda o: media.preview_frame(src, info, t, c, o, media.size_of(job.ratio)))
 
 
-class RenderReq(BaseModel):
-    voice: str
-    rate: int = 10
-    bgm: str = ""
-    smart_cut: bool = True
-
-
-@app.post("/api/jobs/{job_id}/render")
-def render(job_id: str, req: RenderReq):
+@app.get("/api/projects/{job_id}/source/{index}")
+def source(job_id: str, index: int):
     job = _job(job_id)
-    if job.status in ("analyzing", "rendering"):
-        raise HTTPException(409, "이미 진행 중입니다.")
-    if not tts.is_known(req.voice):
-        raise HTTPException(400, "알 수 없는 목소리입니다.")
+    return FileResponse(_src(job, index))
+
+
+@app.get("/api/projects/{job_id}/cover")
+def cover(job_id: str):
+    job = _job(job_id)
+    path = job.dir / "out" / "cover.jpg"
+    if not path.exists():
+        if job.sources:
+            return thumb(job_id, 0)
+        raise HTTPException(404)
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/api/projects/{job_id}/line/{index}/audio")
+def line_audio(job_id: str, index: int):
+    job = _job(job_id)
+    if not 0 <= index < len(job.script.get("lines", [])):
+        raise HTTPException(404)
     try:
-        pipeline.start_render(job, req.voice, max(-30, min(50, req.rate)), req.bgm, req.smart_cut)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    return _public(job)
+        return FileResponse(pipeline.line_audio(job, index))
+    except Exception as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=502)
 
 
 FILES = {"video": ("shorts.mp4", "video/mp4"), "srt": ("subtitles.srt", "text/plain"), "txt": ("upload.txt", "text/plain")}
 
 
-@app.get("/api/jobs/{job_id}/files/{kind}")
+@app.get("/api/projects/{job_id}/files/{kind}")
 def download(job_id: str, kind: str, dl: int = 0):
     job = _job(job_id)
     if kind not in FILES:
         raise HTTPException(404)
     name, mime = FILES[kind]
     path = job.dir / "out" / name
+    if kind == "txt" and job.status == "done":
+        path.write_text(pipeline.upload_text(job), encoding="utf-8")
     if not path.exists():
         raise HTTPException(404, "아직 만들어지지 않았습니다.")
-    base = (job.product_name or "shorts").replace("/", "_")[:30]
-    filename = f"{base}_{name}" if dl else None
-    return FileResponse(path, media_type=mime, filename=filename)
-
-
-@app.get("/api/jobs/{job_id}/source/{index}")
-def source(job_id: str, index: int):
-    job = _job(job_id)
-    if not 0 <= index < len(job.sources):
-        raise HTTPException(404)
-    return FileResponse(job.dir / job.sources[index])
+    base = (job.title or "shorts").replace("/", "_").replace("\\", "_")[:40]
+    return FileResponse(path, media_type=mime, filename=f"{base}_{name}" if dl else None)
 
 
 @app.get("/api/voices/{voice:path}/preview")
-def voice_preview(voice: str, rate: int = 10):
+def voice_preview(voice: str, rate: int = 5):
     if not tts.is_known(voice):
         raise HTTPException(404)
     rate = max(-30, min(50, rate))

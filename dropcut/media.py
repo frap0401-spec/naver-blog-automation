@@ -52,9 +52,9 @@ def probe(path: Path) -> ProbeInfo:
     )
     out = proc.stderr
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", out)
-    if not m:
+    if not m and not re.search(r"Stream #.*Video:", out):
         raise MediaError(f"영상 길이를 읽을 수 없습니다: {path.name}")
-    duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0.0
     width = height = 0
     vm = re.search(r"Stream #.*Video:.*?(\d{2,5})x(\d{2,5})", out)
     if vm:
@@ -81,24 +81,54 @@ def extract_frames(video: Path, out_dir: Path, every: float, prefix: str) -> lis
     return [(round(i * every + every / 2, 1), f) for i, f in enumerate(frames)]
 
 
-def _video_filter(info: ProbeInfo) -> str:
-    """1080x1920 세로 화면으로 맞추는 필터. 가로 영상은 흐린 배경 위에 얹습니다."""
-    w, h, z = config.WIDTH, config.HEIGHT, config.ZOOM
+RATIOS = {"9:16": (1080, 1920), "4:5": (1080, 1350), "1:1": (1080, 1080), "16:9": (1920, 1080)}
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+def size_of(ratio: str) -> tuple[int, int]:
+    return RATIOS.get(ratio, RATIOS["9:16"])
+
+
+def _video_filter(info: ProbeInfo, w: int = 1080, h: int = 1920) -> str:
+    """원하는 화면 비율(w x h)로 맞추는 필터. 비율이 많이 다르면 흐린 배경 위에 얹습니다."""
+    z = config.ZOOM
     zw, zh = int(w * z) // 2 * 2, int(h * z) // 2 * 2
-    aspect = (info.width / info.height) if info.height else 9 / 16
-    if aspect <= 0.75:  # 세로 영상: 꽉 채우기
-        return (
-            f"scale={zw}:{zh}:force_original_aspect_ratio=increase,"
-            f"crop={w}:{h},setsar=1,fps={config.FPS},format=yuv420p"
-        )
-    # 가로/정사각 영상: 흐린 배경 + 가운데 원본
-    fw = int(w * z) // 2 * 2
+    src = (info.width / info.height) if info.height else w / h
+    tgt = w / h
+    common = f"setsar=1,fps={config.FPS},format=yuv420p"
+    if tgt / 1.45 <= src <= tgt * 1.45:  # 비율이 비슷하면 꽉 채우기
+        return f"scale={zw}:{zh}:force_original_aspect_ratio=increase,crop={w}:{h},{common}"
+    fw, fh = int(w * z) // 2 * 2, int(h * 0.94) // 2 * 2
     return (
         f"split=2[bg][fg];"
         f"[bg]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=20:2,eq=brightness=-0.08[bgb];"
-        f"[fg]scale={fw}:-2,crop=min(iw\\,{w}):ih[fgs];"
-        f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2-80,setsar=1,fps={config.FPS},format=yuv420p"
+        f"[fg]scale={fw}:{fh}:force_original_aspect_ratio=decrease,crop=min(iw\\,{w}):min(ih\\,{h})[fgs];"
+        f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2,{common}"
     )
+
+
+def photo_to_video(img: Path, out: Path, seconds: float = 5.0) -> None:
+    """사진을 천천히 확대되는 영상으로 만듭니다."""
+    info = probe(img)
+    iw, ih = max(2, info.width), max(2, info.height)
+    scale = 1440 / max(iw, ih)
+    ow, oh = int(iw * scale) // 2 * 2, int(ih * scale) // 2 * 2
+    frames = int(seconds * config.FPS)
+    run([
+        "-loop", "1", "-i", str(img), "-t", f"{seconds:.2f}",
+        "-vf", (f"scale={ow * 2}:{oh * 2},zoompan=z='min(zoom+0.0009,1.15)':d={frames}"
+                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={ow}x{oh}:fps={config.FPS},format=yuv420p"),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", str(out),
+    ])
+
+
+def filmstrip(src: Path, duration: float, out: Path, count: int = 16) -> None:
+    """구간 고르기용 필름 띠(작은 장면 count개를 가로로 이은 이미지)."""
+    every = max(0.1, duration / count)
+    run([
+        "-i", str(src), "-vf", f"fps=1/{every:.3f},scale=96:-2,crop=96:96,tile={count}x1",
+        "-frames:v", "1", "-q:v", "5", str(out),
+    ])
 
 
 def cleanup_filter(info: ProbeInfo, cleanup: dict | None) -> str:
@@ -141,7 +171,7 @@ def frame_quantize(seconds: float) -> float:
 
 
 def make_segment(src: Path, info: ProbeInfo, start: float, duration: float, out: Path,
-                 cleanup: dict | None = None) -> None:
+                 cleanup: dict | None = None, size: tuple[int, int] = (1080, 1920)) -> None:
     """원본에서 start부터 duration만큼 잘라 세로 컷을 만듭니다. 원본이 짧으면 반복합니다."""
     start = max(0.0, min(start, max(0.0, info.duration - 0.3)))
     remaining = info.duration - start
@@ -154,7 +184,7 @@ def make_segment(src: Path, info: ProbeInfo, start: float, duration: float, out:
             start = 0.0
     args += [
         "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{duration:.3f}", "-an",
-        "-filter_complex", f"{cleanup_filter(info, cleanup)};[c]{_video_filter(_after_cleanup(info, cleanup))}[v]",
+        "-filter_complex", f"{cleanup_filter(info, cleanup)};[c]{_video_filter(_after_cleanup(info, cleanup), *size)}[v]",
         "-map", "[v]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", str(config.FPS),
         str(out),
@@ -175,14 +205,25 @@ def thumbnail(src: Path, t: float, out: Path) -> None:
     run(["-ss", f"{max(0.0, t):.2f}", "-i", str(src), "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4", str(out)])
 
 
-def preview_frame(src: Path, info: ProbeInfo, t: float, cleanup: dict | None, out: Path) -> None:
-    """지우기 설정을 적용한 세로 화면 한 장(미리보기)."""
-    layout = _video_filter(_after_cleanup(info, cleanup))
+def preview_frame(src: Path, info: ProbeInfo, t: float, cleanup: dict | None, out: Path,
+                  size: tuple[int, int] = (1080, 1920)) -> None:
+    """지우기 설정을 적용한 화면 한 장(미리보기)."""
+    layout = _video_filter(_after_cleanup(info, cleanup), *size)
     run([
         "-ss", f"{max(0.0, t):.2f}", "-i", str(src), "-frames:v", "1",
         "-filter_complex", f"{cleanup_filter(info, cleanup)};[c]{layout}[l];[l]scale=360:-2[v]",
         "-map", "[v]", "-q:v", "4", str(out),
     ])
+
+
+def segment_audio(src: Path, info: ProbeInfo, start: float, duration: float, out: Path, keep: bool) -> None:
+    """컷 구간의 원래 소리(keep=False 이거나 소리가 없으면 무음)를 정확한 길이의 WAV로."""
+    if keep and info.has_audio and info.duration > 0:
+        start = max(0.0, min(start, max(0.0, info.duration - duration)))
+        run(["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{duration:.3f}", "-vn",
+             "-af", f"apad,atrim=0:{duration:.3f}", "-ar", "44100", "-ac", "1", str(out)])
+    else:
+        run(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", f"{duration:.3f}", str(out)])
 
 
 def to_wav(src: Path, out: Path, total: float) -> None:
@@ -203,7 +244,8 @@ def concat(files: list[Path], out: Path, copy: bool = True) -> None:
     run(args, cwd=out.parent)
 
 
-def final_render(job_dir: Path, video: Path, narration: Path, ass: Path, out: Path, bgm: Path | None) -> None:
+def final_render(job_dir: Path, video: Path, narration: Path, ass: Path, out: Path, bgm: Path | None,
+                 orig: Path | None = None) -> None:
     """컷 영상 + 나레이션 + (배경음악) + 자막을 합쳐 최종 mp4를 만듭니다."""
     fonts = ""
     if any(config.FONTS_DIR.glob("*.[ot]tf")) or any(config.FONTS_DIR.glob("*.ttc")):
@@ -213,12 +255,19 @@ def final_render(job_dir: Path, video: Path, narration: Path, ass: Path, out: Pa
         except ValueError:  # 다른 드라이브(Windows)
             fonts = ""
     args = ["-i", video.name, "-i", narration.name]
+    mix, n = ["[1:a]"], 2
+    pre = ""
+    if orig:
+        args += ["-i", orig.name]
+        pre += f"[{n}:a]volume=0.7[o];"
+        mix.append("[o]")
+        n += 1
     if bgm:
         args += ["-stream_loop", "-1", "-i", str(bgm)]
-        audio = (
-            f"[2:a]volume={config.BGM_VOLUME}[b];"
-            f"[1:a][b]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]"
-        )
+        pre += f"[{n}:a]volume={config.BGM_VOLUME}[b];"
+        mix.append("[b]")
+    if len(mix) > 1:
+        audio = f"{pre}{''.join(mix)}amix=inputs={len(mix)}:duration=first:dropout_transition=0:normalize=0[a]"
     else:
         audio = "[1:a]anull[a]"
     filt = f"[0:v]ass={ass.name}{fonts}[v];{audio}"
