@@ -50,10 +50,17 @@
 
 ## 목소리
 
-- **기본(무료)**: 선희·인준·현수 3명을 톤별로 나눈 8가지
-- **ElevenLabs(선택, 유료)**: `.env`에 `ELEVENLABS_API_KEY`를 넣으면 내 ElevenLabs 계정의 목소리가 모두 목록에 뜹니다.
-  ElevenLabs 사이트의 Voice Library에서 한국어 목소리를 **My Voices**에 추가해 두면 그대로 고를 수 있습니다.
-  모델은 `ELEVENLABS_MODEL`로 바꿀 수 있습니다(기본 `eleven_multilingual_v2`).
+| 서비스 | 비용 | 넣을 키 (.env) |
+|---|---|---|
+| 기본 (Microsoft Edge 음성) | 무료 | 없음 · 선희·인준·현수 톤별 8가지 |
+| 타입캐스트 | 유료 (플랜 확인) | `TYPECAST_API_KEY` — typecast.ai/developers 에서 발급. 공식 SDK로 목소리 목록을 자동으로 불러옴 |
+| 클로바 보이스 | 사용량만큼 과금 | `NCP_CLOVA_CLIENT_ID`, `NCP_CLOVA_CLIENT_SECRET` — 네이버 클라우드 콘솔 > AI·NAVER API > Application 등록(CLOVA Voice) |
+| ElevenLabs | 유료 (무료 플랜은 상업적 이용 제한) | `ELEVENLABS_API_KEY` |
+
+- 클로바 더빙은 따로 공개된 연결 방법(API)이 없어서, 같은 네이버 음성을 제공하는 **CLOVA Voice(네이버 클라우드)**로 연결합니다.
+  기본 목소리 목록(아라·예진·지윤·민상·신우·진호·규원·하준·다인)은 `NCP_CLOVA_SPEAKERS`로 바꿀 수 있습니다.
+- 타입캐스트 감정 톤은 `TYPECAST_EMOTION`(normal / happy / toneup / tonedown)으로 바꿀 수 있습니다.
+- 목소리 옆 ☆를 누르면 즐겨찾기가 됩니다.
 
 ## 설치
 

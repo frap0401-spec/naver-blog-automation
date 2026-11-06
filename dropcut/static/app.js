@@ -541,7 +541,10 @@ $("#clApply").onclick = () => remake();
   $("#aiState").className = "pill" + (S.cfg.ai ? " ok" : "");
   $("#vProvider").innerHTML = providers().map((p) => `<option>${esc(p)}</option>`).join("");
   selectVoice(null);
-  if (!S.cfg.eleven) $("#vHint").textContent += " ElevenLabs 목소리는 .env에 ELEVENLABS_API_KEY를 넣으면 나와요.";
+  const have = new Set(S.cfg.voices.map((v) => v.provider));
+  const missing = [["타입캐스트", "TYPECAST_API_KEY"], ["클로바 보이스", "NCP_CLOVA_CLIENT_ID·SECRET"], ["ElevenLabs", "ELEVENLABS_API_KEY"]]
+    .filter(([n]) => !have.has(n)).map(([n, k]) => `${n}(${k})`);
+  if (missing.length) $("#vHint").textContent += ` ${missing.join(", ")} 목소리는 .env에 키를 넣으면 나와요.`;
   const styles = S.cfg.styles.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   $("#style").innerHTML = styles; $("#cStyle").innerHTML = styles;
   $("#bgm").innerHTML = '<option value="">없음</option>' + S.cfg.bgm.map((b) => `<option>${esc(b)}</option>`).join("");
