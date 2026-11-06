@@ -40,6 +40,20 @@
     <label>강조할 특징 메모 <span class="muted">(선택)</span>
       <textarea id="pnotes" rows="2" placeholder="예: 세척이 쉬움, 소음 없음, 2L 대용량"></textarea>
     </label>
+
+    <div class="modes">
+      <label class="mode"><input type="radio" name="mode" value="ai" checked>
+        <b>AI 자동 원고</b><span class="muted">영상을 보고 원고 3개 + 장면 배치까지 (Claude API 키 필요)</span></label>
+      <label class="mode"><input type="radio" name="mode" value="manual">
+        <b>원고 직접 입력</b><span class="muted">결제 없이 사용 · 내가 쓴 원고로 컷편집·자막·나레이션 자동</span></label>
+    </div>
+    <div id="manualBox" hidden>
+      <div class="copy-h">원고 <span>
+        <button type="button" id="btnPrompt" title="claude.ai 채팅에 붙여넣을 요청문을 복사합니다">claude.ai용 요청문 복사</button>
+        <button type="button" id="btnExample">예시 넣기</button></span></div>
+      <textarea id="scriptText" rows="12" placeholder="한 줄에 한 문장씩 나레이션을 적으세요.&#10;위쪽에 '상단1: / 상단2: / 제목: / 설명: / 해시태그: / 고정댓글:' 을 적으면 함께 적용됩니다."></textarea>
+      <p class="muted">💡 claude.ai 채팅(무료/구독)에 요청문을 붙여넣고, 나온 답을 그대로 여기에 붙여넣으면 됩니다.</p>
+    </div>
     <button class="primary" id="btnUpload" disabled>올리고 원고 만들기</button>
     <div class="status" id="st1" hidden>
       <div class="bar"><i></i></div><span></span>

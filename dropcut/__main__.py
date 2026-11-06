@@ -1,6 +1,7 @@
 """실행 방법
   웹 화면:   python -m dropcut                 (http://127.0.0.1:8000)
   자동 모드: python -m dropcut make 영상1.mp4 [영상2.mp4 ...] --name 상품명 --link 쿠팡링크
+  직접 원고: python -m dropcut make 영상.mp4 --script-file 원고.txt   (API 키 불필요)
 """
 from __future__ import annotations
 
@@ -24,7 +25,9 @@ def make(args) -> int:
     from . import pipeline, tts
 
     files = [(Path(p).name, Path(p).read_bytes()) for p in args.videos]
-    job = pipeline.create(files, args.name, args.notes, args.link)
+    script_text = Path(args.script_file).read_text(encoding="utf-8-sig") if args.script_file else ""
+    mode = "manual" if script_text else "ai"
+    job = pipeline.create(files, args.name, args.notes, args.link, mode, script_text)
     print(f"[1/5] 올리기 완료 · 작업 {job.id}")
     pipeline.start_analysis(job)
     while job.status == "analyzing":
@@ -72,6 +75,7 @@ def main() -> None:
     m.add_argument("--notes", default="", help="강조할 특징 메모")
     m.add_argument("--link", default="", help="쿠팡 파트너스 링크")
     m.add_argument("--script", type=int, default=1, help="고를 원고 번호(1~3)")
+    m.add_argument("--script-file", default="", help="직접 쓴 원고 txt (AI 대신 사용)")
     m.add_argument("--voice", default="", help="예: ko-KR-SunHiNeural")
     m.add_argument("--rate", type=int, default=10, help="말 속도 %%")
     m.add_argument("--bgm", default="", help="assets/bgm 안의 파일명")

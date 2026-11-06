@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -9,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, llm, pipeline, tts
+from . import config, llm, manual, pipeline, tts
 
 app = FastAPI(title="드롭컷")
 STATIC = Path(__file__).parent / "static"
@@ -26,7 +27,7 @@ def _job(job_id: str) -> pipeline.Job:
 def _public(job: pipeline.Job) -> dict:
     data = {
         k: getattr(job, k)
-        for k in ("id", "product_name", "link", "status", "progress", "message", "analysis",
+        for k in ("id", "mode", "product_name", "link", "status", "progress", "message", "analysis",
                   "chosen", "voice", "rate", "bgm", "error", "duration", "durations")
     }
     if job.status == "done" and job.chosen:
@@ -46,6 +47,9 @@ def get_config():
         "bgm": pipeline.list_bgm(),
         "llm": config.LLM_BACKEND,
         "tts": config.TTS_BACKEND,
+        "has_key": bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")),
+        "format_guide": manual.FORMAT_GUIDE,
+        "chat_prompt": manual.PROMPT_FOR_CHAT,
     }
 
 
@@ -55,6 +59,8 @@ async def create_job(
     product_name: str = Form(""),
     notes: str = Form(""),
     link: str = Form(""),
+    mode: str = Form("ai"),
+    script_text: str = Form(""),
 ):
     items = []
     for f in files:
@@ -65,7 +71,14 @@ async def create_job(
         raise HTTPException(400, "영상을 올려 주세요.")
     if len(items) > 10:
         raise HTTPException(400, "영상은 최대 10개까지 올릴 수 있습니다.")
-    job = pipeline.create(items, product_name, notes, link)
+    if mode == "ai" and config.LLM_BACKEND == "claude" and not (
+        os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")
+    ):
+        raise HTTPException(400, "AI 자동 원고를 쓰려면 .env에 ANTHROPIC_API_KEY를 넣어 주세요. 키가 없으면 '원고 직접 입력'을 선택하세요.")
+    try:
+        job = pipeline.create(items, product_name, notes, link, mode, script_text)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     pipeline.start_analysis(job)
     return _public(job)
 

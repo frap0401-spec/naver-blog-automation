@@ -9,7 +9,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import config, llm, media, subtitles, tts
+from . import config, llm, manual, media, subtitles, tts
 
 
 @dataclass
@@ -18,6 +18,8 @@ class Job:
     product_name: str = ""
     notes: str = ""
     link: str = ""
+    mode: str = "ai"  # ai | manual
+    script_text: str = ""
     sources: list[str] = field(default_factory=list)
     durations: list[float] = field(default_factory=list)
     status: str = "created"  # created|analyzing|scripts_ready|rendering|done|error
@@ -64,8 +66,12 @@ def get(job_id: str) -> Job | None:
     return None
 
 
-def create(files: list[tuple[str, bytes]], product_name: str, notes: str, link: str) -> Job:
-    job = Job(id=uuid.uuid4().hex[:12], product_name=product_name.strip(), notes=notes.strip(), link=link.strip())
+def create(files: list[tuple[str, bytes]], product_name: str, notes: str, link: str,
+           mode: str = "ai", script_text: str = "") -> Job:
+    if mode == "manual":
+        manual.parse(script_text, product_name)  # 형식 오류는 업로드 전에 바로 알림
+    job = Job(id=uuid.uuid4().hex[:12], product_name=product_name.strip(), notes=notes.strip(), link=link.strip(),
+              mode="manual" if mode == "manual" else "ai", script_text=script_text.strip())
     src_dir = job.dir / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     for i, (name, data) in enumerate(files):
@@ -101,6 +107,11 @@ def _analyze(job: Job) -> None:
     infos = [media.probe(job.dir / s) for s in job.sources]
     job.update(durations=[round(i.duration, 2) for i in infos], progress=0.15, message="장면 추출 중")
 
+    if job.mode == "manual":
+        result = manual.build(job.script_text, job.product_name, job.durations)
+        job.update(status="scripts_ready", progress=1.0, message="", analysis=result.model_dump())
+        return
+
     total = sum(i.duration for i in infos)
     every = max(1.0, total / config.MAX_FRAMES)
     frame_dir = job.dir / "frames"
@@ -129,6 +140,7 @@ def choose_script(job: Job, script: dict) -> None:
     n = len(job.durations)
     for ln in parsed.lines:
         ln.video_index = min(max(0, ln.video_index), n - 1)
+        ln.start_sec = min(max(0.0, ln.start_sec), max(0.0, job.durations[ln.video_index] - 0.3))
     job.update(chosen=parsed.model_dump())
 
 

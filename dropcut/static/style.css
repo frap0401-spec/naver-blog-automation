@@ -59,7 +59,16 @@ pre { white-space: pre-wrap; background: #0f1115; border: 1px solid var(--line);
 .row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 .error { background: #2a1416; border: 1px solid var(--err); color: var(--err); padding: 12px 16px; border-radius: 12px; white-space: pre-wrap; }
 .error button { margin-top: 8px; }
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0 8px; }
+.mode { border: 2px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 0; cursor: pointer; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; align-items: center; }
+.mode input { width: auto; margin: 0; grid-row: span 2; accent-color: var(--accent); }
+.mode:has(input:checked) { border-color: var(--accent); background: var(--sel); }
+#manualBox { margin-top: 10px; }
+#manualBox .copy-h button { margin-left: 4px; }
+.cut select, .cut input { width: auto; margin: 0 2px; padding: 2px 6px; font-size: 12px; border-radius: 6px; }
+.cut input { width: 64px; }
+.scripts.one { grid-template-columns: minmax(0, 560px); }
 @media (max-width: 860px) {
-  .scripts, .voices, .grid2, .result { grid-template-columns: 1fr; }
+  .scripts, .voices, .grid2, .result, .modes { grid-template-columns: 1fr; }
   header { padding: 12px 16px; }
 }
