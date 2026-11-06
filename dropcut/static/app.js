@@ -9,6 +9,7 @@ function showStep(n) {
   document.querySelectorAll("#steps li").forEach((li) => {
     const k = +li.dataset.step;
     li.className = k === n ? "on" : k < n ? "done" : "";
+    li.querySelector(".dot").textContent = k < n ? "✓" : k;
   });
   $("#s" + n).scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -284,7 +285,7 @@ $("#btnRender").onclick = async () => {
   try {
     state.job = await api(`/api/jobs/${state.job.id}/render`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ voice: state.voice, rate: +$("#rate").value, bgm: $("#bgm").value }),
+      body: JSON.stringify({ voice: state.voice, rate: +$("#rate").value, bgm: $("#bgm").value, smart_cut: $("#smartCut").checked }),
     });
     showStep(4);
     poll();
@@ -300,6 +301,8 @@ function renderDone(job) {
   $("#dlVideo").href = `${base}/video?dl=1`;
   $("#dlTxt").href = `${base}/txt?dl=1`;
   $("#dlSrt").href = `${base}/srt?dl=1`;
+  $("#fixes").innerHTML = !job.smart_cut ? "어색한 컷 자동 보정: 꺼짐"
+    : job.fixes.length ? "✂ 자동으로 고친 컷<br>" + job.fixes.map(esc).join("<br>") : "✂ 어색한 컷 없음 — 모든 컷을 그대로 사용했어요.";
   $("#exTitle").textContent = job.export.title;
   $("#exDesc").textContent = job.export.description;
   $("#exPin").textContent = job.export.pinned;

@@ -28,7 +28,7 @@ def _public(job: pipeline.Job) -> dict:
     data = {
         k: getattr(job, k)
         for k in ("id", "mode", "product_name", "link", "status", "progress", "message", "analysis",
-                  "chosen", "voice", "rate", "bgm", "cleanup", "error", "duration", "durations")
+                  "chosen", "voice", "rate", "bgm", "cleanup", "smart_cut", "fixes", "error", "duration", "durations")
     }
     if job.status == "done" and job.chosen:
         script = llm.Script.model_validate(job.chosen)
@@ -160,6 +160,7 @@ class RenderReq(BaseModel):
     voice: str
     rate: int = 10
     bgm: str = ""
+    smart_cut: bool = True
 
 
 @app.post("/api/jobs/{job_id}/render")
@@ -170,7 +171,7 @@ def render(job_id: str, req: RenderReq):
     if not tts.is_known(req.voice):
         raise HTTPException(400, "알 수 없는 목소리입니다.")
     try:
-        pipeline.start_render(job, req.voice, max(-30, min(50, req.rate)), req.bgm)
+        pipeline.start_render(job, req.voice, max(-30, min(50, req.rate)), req.bgm, req.smart_cut)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return _public(job)

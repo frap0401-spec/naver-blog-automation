@@ -8,13 +8,13 @@
 </head>
 <body>
 <header>
-  <div class="brand"><span class="logo">✂</span> 드롭컷 <small>쇼핑쇼츠 편집 에이전트</small></div>
+  <div class="brand"><span class="logo">✂</span>드롭컷<small>쇼핑쇼츠 편집 에이전트</small></div>
   <ol class="steps" id="steps">
-    <li data-step="1">올리기</li>
-    <li data-step="2">원고 고르기</li>
-    <li data-step="3">목소리 고르기</li>
-    <li data-step="4">만들기</li>
-    <li data-step="5">내보내기</li>
+    <li data-step="1"><span class="dot">1</span><span class="lbl">올리기</span></li>
+    <li data-step="2"><span class="dot">2</span><span class="lbl">원고 고르기</span></li>
+    <li data-step="3"><span class="dot">3</span><span class="lbl">목소리 고르기</span></li>
+    <li data-step="4"><span class="dot">4</span><span class="lbl">만들기</span></li>
+    <li data-step="5"><span class="dot">5</span><span class="lbl">내보내기</span></li>
   </ol>
 </header>
 
@@ -24,7 +24,7 @@
     <h2>1. 상품 영상 올리기</h2>
     <label class="drop" id="drop">
       <input type="file" id="files" accept="video/*" multiple hidden>
-      <div class="drop-icon">⬆</div>
+      <div class="drop-icon">↑</div>
       <div><b>영상을 끌어다 놓거나 클릭해서 선택</b></div>
       <div class="muted">상품 원본·리뷰 영상 여러 개 가능 (mp4, mov, webm)</div>
       <ul id="filelist"></ul>
@@ -85,6 +85,8 @@
         <select id="bgm"><option value="">없음</option></select>
       </label>
     </div>
+    <label class="check"><input type="checkbox" id="smartCut" checked>
+      <span><b>어색한 컷 자동 보정</b> <span class="muted">검은 화면·멈춘 화면·순간 장면 전환이 걸린 컷만 가까운 자연스러운 구간으로 옮기고, 문제없는 컷은 그대로 씁니다.</span></span></label>
     <button class="primary" id="btnRender" disabled>만들기</button>
   </section>
 
@@ -108,6 +110,7 @@
           <a class="btn" id="dlTxt">업로드 문구 (txt)</a>
           <a class="btn" id="dlSrt">자막 (srt)</a>
         </div>
+        <div class="fixes muted" id="fixes"></div>
         <div class="copy"><div class="copy-h">제목 <button data-copy="exTitle">복사</button></div><pre id="exTitle"></pre></div>
         <div class="copy"><div class="copy-h">설명란 <button data-copy="exDesc">복사</button></div><pre id="exDesc"></pre></div>
         <div class="copy"><div class="copy-h">고정 댓글 <button data-copy="exPin">복사</button></div><pre id="exPin"></pre></div>

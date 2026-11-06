@@ -43,7 +43,7 @@ def make(args) -> int:
     print(f"[2/5] 원고 {pick + 1} 선택")
     voice = args.voice or tts.default_voice()
     print(f"[3/5] 목소리 {voice} (속도 {args.rate:+d}%)")
-    pipeline.start_render(job, voice, args.rate, args.bgm)
+    pipeline.start_render(job, voice, args.rate, args.bgm, not args.no_smart_cut)
     last = ""
     while job.status == "rendering":
         if job.message != last:
@@ -54,6 +54,8 @@ def make(args) -> int:
         print("오류:", job.error)
         return 1
     print(f"[4/5] 만들기 완료 ({job.duration:.1f}초)")
+    for f in job.fixes:
+        print("    컷 보정:", f)
     out = Path(args.out or ".").resolve()
     out.mkdir(parents=True, exist_ok=True)
     for name in ("shorts.mp4", "upload.txt", "subtitles.srt"):
@@ -79,6 +81,7 @@ def main() -> None:
     m.add_argument("--voice", default="", help="예: edge:ko-KR-InJoonNeural:-10Hz 또는 el:<ElevenLabs voice_id>")
     m.add_argument("--rate", type=int, default=10, help="말 속도 %%")
     m.add_argument("--bgm", default="", help="assets/bgm 안의 파일명")
+    m.add_argument("--no-smart-cut", action="store_true", help="어색한 컷 자동 보정 끄기")
     m.add_argument("--out", default="output")
     args = p.parse_args()
     if args.cmd == "make":

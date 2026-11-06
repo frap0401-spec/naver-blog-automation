@@ -13,7 +13,7 @@ class Cue:
     text: str
 
 
-def split_chunks(text: str, max_chars: int = 14) -> list[str]:
+def split_chunks(text: str, max_chars: int = 13) -> list[str]:
     """한 화면에 보기 좋게 문장을 어절 단위로 나눕니다."""
     words = text.split()
     chunks: list[str] = []
@@ -51,6 +51,28 @@ def _ts(sec: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+def _units(text: str) -> float:
+    """글자 폭 추정(글꼴 크기 1 기준): 한글·한자 1.0, 영문·숫자 0.6, 공백 0.3."""
+    total = 0.0
+    for ch in text:
+        if ch == " ":
+            total += 0.3
+        elif ord(ch) < 0x1100:
+            total += 0.6
+        else:
+            total += 1.0
+    return total
+
+
+def _fit(text: str, base: int, max_width: int) -> str:
+    """한 줄에 다 들어가도록 필요하면 글자 크기를 줄이는 태그."""
+    size = base
+    width = _units(text) * base * 1.02
+    if width > max_width:
+        size = max(40, int(base * max_width / width))
+    return f"\\fs{size}" if size != base else ""
+
+
 def _esc(text: str) -> str:
     return text.replace("\\", "＼").replace("{", "(").replace("}", ")").replace("\n", " ")
 
@@ -77,13 +99,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = []
     end = _ts(total + 1)
+    maxw = w - 100
     if title1:
-        lines.append(f"Dialogue: 1,{_ts(0)},{end},Title1,,0,0,0,,{_esc(title1)}")
+        lines.append(f"Dialogue: 1,{_ts(0)},{end},Title1,,0,0,0,,{{{_fit(title1, 104, maxw)}}}{_esc(title1)}")
     if title2:
-        lines.append(f"Dialogue: 1,{_ts(0)},{end},Title2,,0,0,0,,{_esc(title2)}")
+        lines.append(f"Dialogue: 1,{_ts(0)},{end},Title2,,0,0,0,,{{{_fit(title2, 124, maxw)}}}{_esc(title2)}")
     for c in cues:
         # 살짝 커지며 나타나는 팝 효과
-        pop = r"{\fscx88\fscy88\t(0,90,\fscx100\fscy100)}"
+        pop = "{" + _fit(c.text, 86, w - 140) + r"\fscx88\fscy88\t(0,90,\fscx100\fscy100)}"
         lines.append(f"Dialogue: 0,{_ts(c.start)},{_ts(c.end)},Sub,,0,0,0,,{pop}{_esc(c.text)}")
     return header + "\n".join(lines) + "\n"
 

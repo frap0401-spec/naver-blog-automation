@@ -9,7 +9,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import config, llm, manual, media, subtitles, tts
+from . import config, llm, manual, media, smartcut, subtitles, tts
 
 
 @dataclass
@@ -30,7 +30,9 @@ class Job:
     voice: str = field(default_factory=tts.default_voice)
     rate: int = 10
     bgm: str = ""
-    cleanup: dict = field(default_factory=dict)  # {"0": {"mode": "crop", "box": [x,y,w,h]}}
+    cleanup: dict = field(default_factory=dict)
+    smart_cut: bool = True
+    fixes: list = field(default_factory=list)  # {"0": {"mode": "crop", "box": [x,y,w,h]}}
     error: str = ""
     duration: float = 0.0
 
@@ -173,7 +175,9 @@ def choose_script(job: Job, script: dict) -> None:
 
 # 3) 목소리 고르기 + 4) 만들기 ------------------------------------------------
 
-def start_render(job: Job, voice: str, rate: int, bgm: str) -> None:
+def start_render(job: Job, voice: str, rate: int, bgm: str, smart_cut: bool | None = None) -> None:
+    if smart_cut is not None:
+        job.smart_cut = bool(smart_cut)
     if not job.chosen:
         raise ValueError("원고를 먼저 골라 주세요.")
     if bgm and not (config.BGM_DIR / bgm).is_file():
@@ -203,13 +207,29 @@ def _render(job: Job) -> None:
         wavs.append(wav)
         job.update(progress=0.3 * (i + 1) / n)
 
+    # 어색한 컷 자동 보정: 문제가 있는 구간만 가까운 깨끗한 구간으로 옮김
+    starts = [ln.start_sec for ln in script.lines]
+    fixes: list[str] = []
+    if job.smart_cut:
+        job.update(message="어색한 컷 찾는 중", progress=0.3)
+        scans: dict[int, smartcut.Issues] = {}
+        for i, ln in enumerate(script.lines):
+            vi = ln.video_index
+            if vi not in scans:
+                scans[vi] = smartcut.scan(job.dir / job.sources[vi], job.dir / "scan" / f"v{vi}.json")
+            new, found = smartcut.best_start(scans[vi], infos[vi].duration, ln.start_sec, seg_lens[i])
+            if found:
+                starts[i] = new
+                moved = f"{ln.start_sec:.1f}초 → {new:.1f}초" if abs(new - ln.start_sec) >= 0.05 else "옮길 곳이 없어 그대로"
+                fixes.append(f"{i + 1}번 문장(영상{vi + 1}): {', '.join(found)} · {moved}")
+
     # 컷 편집
-    job.update(message="컷 편집 중")
+    job.update(message="컷 편집 중", fixes=fixes)
     segs = []
     for i, ln in enumerate(script.lines):
         seg = work / f"v_{i:02d}.mp4"
         src = job.dir / job.sources[ln.video_index]
-        media.make_segment(src, infos[ln.video_index], ln.start_sec, seg_lens[i], seg,
+        media.make_segment(src, infos[ln.video_index], starts[i], seg_lens[i], seg,
                            job.cleanup.get(str(ln.video_index)))
         segs.append(seg)
         job.update(progress=0.3 + 0.4 * (i + 1) / n)
